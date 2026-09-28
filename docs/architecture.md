@@ -70,7 +70,8 @@ bin/sandhome          the command. Copied to $SANDHOME_EXEC/bin by a bootstrap.
   lib/profile.sh      the login fragment (fetched never, aliased never)
   tools/<name>.sh     one module per toolchain
   shims/*.c           fakepty, fakepwd
-  shell/errandsh      a line discipline for a session with no pty
+  shell/errandsh      a line discipline for a session with no kernel pty
+  shell/faketty       run one command under the userspace pty
 ```
 
 **One fact has one home.** The environment is written once, to
@@ -149,25 +150,30 @@ alternative was measured are:
 
 ## 6. The shims, and why they are opt-in
 
-`fakepty` makes fds 0-2 report `isatty() == 1`. `fakepwd` answers
+`fakepty` is a **userspace pty**. It keeps a list of the session's own
+`readlink()` descriptor identities (`SANDHOME_FAKEPTY_ID`, set by `shell/faketty`
+from `/proc/$$/fd`) and answers `isatty`, `tcgetattr`, `ioctl(TIOCGWINSZ)` and
+`open("/dev/tty")` as a terminal for THOSE, and for nothing else. A pipe a
+program opens later is a new object; it is not in the list and stays a pipe, so
+`jq -n 1 | cat` does not put ANSI codes into `cat`. Without the variable the
+older fds 0-2 behaviour is kept, and that is what made the shim unsafe to turn
+on: it reported every fd 1, including a pipeline's. `fakepwd` answers
 `getpwnam`/`getpwuid` from a synthetic passwd database for a cage with no
 `/etc/passwd`. Neither can reach a **statically linked** binary, because a
 static binary carries its own libc and there is nothing to interpose into.
 
-They are loaded only when `SANDHOME_SHIMS` is set to something other than `0`,
-and the default is off for a measured reason: `fakepty` makes every
-terminal-aware program colourise a *pipe*.
+That limit is about interposition, not about terminals. A full-screen program
+is a matter of what it is linked against: `less`, `nano`, `top` and python
+curses are dynamically linked and run full-screen here, where the kernel offers
+no pty at all. So the honest statement of the limit is that `sandhome pty`
+cannot reach a statically linked binary, and not that a full-screen program is
+the one thing it cannot do.
 
-```
-$ LD_PRELOAD=fakepty.so jq -n '{ok:1}'
-^[[1;39m{^[[0m
-  ^[[1;34m"ok"^[[0m^[[1;39m:^[[0m ^[[0;39m1^[[0m
-^[[1;39m}^[[0m
-```
-
-That breaks `jq -r`, `git`, `ls --color=auto` and every consumer that reads a
-pipe. One shim that makes a pipe look interactive is a worse default than a
-session without echo.
+They are loaded only when `SANDHOME_SHIMS` is set to something other than `0`.
+When they are, `env.sh` computes the same descriptor identities for the login
+shell, so the session is scoped from the first command. `shell/faketty` is the
+single-command path: it exports the shim and the identity and `exec`s, which is
+why a subshell the command starts still has a terminal.
 
 ## 7. Digests
 

@@ -466,6 +466,95 @@ WHERE3
 sh "$tmp/where3.sh" "$ROOT" "$tmp/pw3" 2>/dev/null)
 t_is "$(sh "$tmp/where3.sh" "$ROOT" "$tmp/pw3" 2>/dev/null)" 'absent' \
     'sh_path_where reports a tool that is nowhere as absent (#43)'
+# # STOP: THE VIEW GATE COUNTS WHAT IS COPIED, NOT THE WHOLE TREE. sh_view_need
+# used `du -sk` over the source, but sh_promote_tree only COPIES regular
+# executables and symlinks everything else, so a toolchain whose bulk is
+# librustc_driver.so/libLLVM was refused on a root the real view fits in. The
+# fixture is one executable and six executables named .so: only the executable
+# is copied.
+copy_src="$tmp/copysrc"
+mkdir -p "$copy_src" 2>/dev/null
+if [ -x /bin/sh ]; then
+    cp /bin/sh "$copy_src/real" 2>/dev/null
+    i=0
+    while [ "$i" -lt 6 ]; do
+        cp /bin/sh "$copy_src/libso$i.so" 2>/dev/null || break
+        i=$((i + 1))
+    done
+fi
+copy_kb=$(sh_view_copy_kb "$copy_src" 2>/dev/null)
+whole_kb=$(sh_dir_size "$copy_src" 2>/dev/null)
+case "$copy_kb" in
+    ''|*[!0-9]*) t_ok 1 'view copy size counts the executable (#33)' ;;
+    *)
+        if [ "$copy_kb" -gt 0 ]; then
+            t_ok 0 'view copy size counts the executable (#33)'
+        else
+            t_ok 1 'view copy size counts the executable (#33)'
+        fi
+        if [ "$copy_kb" -lt "$whole_kb" ]; then
+            t_ok 0 'view copy size excludes symlinked .so/.rlib bulk (#33)'
+        else
+            t_ok 1 'view copy size excludes symlinked .so/.rlib bulk (#33)'
+        fi
+        ;;
+esac
+
+# # STOP: THE RECORDED EXEC ROOT IS READ BACK AND REUSED (#41). Re-ranking on
+# every install migrated the exec root as free space moved and orphaned the
+# views and launchers on the old root. The parser is measured on its own, and
+# the preference with stubbed probes and free space so the roomier candidate is
+# deterministic; the old code had neither, so both clauses fail against it.
+rec_home="$tmp/rec-home"
+mkdir -p "$rec_home" 2>/dev/null
+printf "SANDHOME_HOME='%s'\nSANDHOME_EXEC='/x/recorded'\nexport SANDHOME_HOME SANDHOME_EXEC\n" "$rec_home" \
+    > "$rec_home/env.sh"
+rec=$(SH_HOME="$rec_home" sh -c \
+    '. "$1/lib/common.sh"; . "$1/lib/detect.sh"; . "$1/lib/space.sh"; sh_space_recorded_exec' \
+    sh "$ROOT")
+t_is "$rec" '/x/recorded' 'the recorded exec root is read back from env.sh (#41)'
+rec_none=$(SH_HOME="$tmp/rec-none" sh -c \
+    '. "$1/lib/common.sh"; . "$1/lib/detect.sh"; . "$1/lib/space.sh"; sh_space_recorded_exec' \
+    sh "$ROOT")
+t_is "$rec_none" '' 'no recorded exec root when env.sh is absent (#41)'
+
+sticky_home="$tmp/sticky-home"
+sticky_exec="$tmp/sticky-exec"
+mkdir -p "$sticky_home" "$sticky_exec" 2>/dev/null
+printf "SANDHOME_EXEC='%s'\n" "$sticky_exec" > "$sticky_home/env.sh"
+sticky_got=$(STICKY_EXEC="$sticky_exec" SANDHOME_HOME="$sticky_home" SANDHOME_MIN_EXEC_MB=1 \
+    env -u SANDHOME_EXEC sh -c '
+        . "$1/lib/common.sh"; . "$1/lib/detect.sh"; . "$1/lib/space.sh"
+        sh_exec_probe() { case "$1" in "$SANDHOME_HOME") return 1 ;; *) return 0 ;; esac; }
+        sh_dir_writable() { return 0; }
+        sh_free_mb() { case "$1" in "$STICKY_EXEC") printf 200 ;; *) printf 900 ;; esac; }
+        sh_space_plan >/dev/null 2>&1
+        printf "%s" "$SH_EXEC"
+    ' sh "$ROOT")
+t_is "$sticky_got" "$sticky_exec" 'the plan reuses the recorded exec root (#41)'
+rm -rf "$rec_home" "$sticky_home" 2>/dev/null
+
+# # STOP: INSTALL SELF-HEALS THE LAUNCHER ONTO THE CHOSEN ROOT (#41). When a
+# create plan moves the exec root, `sandhome install` rebuilt views there while
+# `sandhome` itself stayed on the old root, and the next shell got
+# `command not found`. The function must copy both launchers.
+heal_repo="$tmp/heal-repo"
+heal_bin="$tmp/heal-bin"
+mkdir -p "$heal_repo/bin" "$heal_repo/shell" "$heal_bin" 2>/dev/null
+printf '#!/bin/sh\nexit 0\n' > "$heal_repo/bin/sandhome"
+printf '#!/bin/sh\nexit 0\n' > "$heal_repo/shell/errandsh"
+SH_REPO_DIR="$heal_repo" SH_EXEC_BIN="$heal_bin" SH_DRY_RUN=0 \
+    sh -c '. "$1/lib/common.sh"; . "$1/lib/env.sh"; sh_exec_install_launchers' sh "$ROOT"
+if [ -x "$heal_bin/sandhome" ]; then
+    t_ok 0 'install self-heals sandhome onto the chosen exec bin (#41)'
+else
+    t_ok 1 'install self-heals sandhome onto the chosen exec bin (#41)'
+fi
+if [ -x "$heal_bin/errandsh" ]; then
+    t_ok 0 'install self-heals errandsh onto the chosen exec bin (#41)'
+else
+    t_ok 1 'install self-heals errandsh onto the chosen exec bin (#41)'
+fi
 
 # --- class I: a draining exec root is announced, not discovered --------------
 # # STOP: THE THREE STATES ARE STUBBED, AND EVERY ONE OF THEM IS A CLAIM ABOUT

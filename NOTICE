@@ -7,9 +7,13 @@ cannot be added without recording it.
 
 | toolchain | bytes | version | digest held to |
 | --- | --- | --- | --- |
+| bun | `https://github.com/oven-sh/bun/releases/download/` | latest-release redirect tag | caller pin only (`SANDHOME_SHA256_BUN*`); hashed and printed otherwise |
+| clang | `https://github.com/llvm/llvm-project/releases/download/` | latest-release redirect tag (`llvmorg-*`) | caller pin only (`SANDHOME_SHA256_CLANG*`); hashed and printed otherwise |
+| deno | `https://github.com/denoland/deno/releases/download/` | latest-release redirect tag | `<asset>.sha256sum` sidecar published beside the zip, shape-validated hex64 |
 | fd | `https://github.com/sharkdp/fd/releases/download/` | latest-release redirect tag | caller pin only (`SANDHOME_SHA256_FD*`); hashed and printed otherwise |
 | go | `https://go.dev/dl/` | `https://go.dev/VERSION?m=text`, first line | `https://go.dev/dl/?mode=json`, `filename` entry, shape-validated hex64 |
 | jq | `https://github.com/jqlang/jq/releases/latest/download/` | latest-release redirect | caller pin only (`SANDHOME_SHA256_JQ*`); hashed and printed otherwise |
+| mold | `https://github.com/rui314/mold/releases/download/` | latest-release redirect tag | caller pin only (`SANDHOME_SHA256_MOLD*`); hashed and printed otherwise |
 | node | `https://nodejs.org/dist/` | `https://nodejs.org/dist/index.json`, first entry | `SHASUMS256.txt` entry for the tarball, shape-validated hex64 |
 | python | `https://github.com/astral-sh/uv/releases/latest/download/` (uv installs CPython from python-build-standalone) | latest-release redirect tag | caller pin only (`SANDHOME_SHA256_PYTHON*`); hashed and printed otherwise |
 | ripgrep | `https://github.com/BurntSushi/ripgrep/releases/download/` | release tag | caller pin only (`SANDHOME_SHA256_RIPGREP*`); hashed and printed otherwise |
@@ -22,3 +26,12 @@ against the expected value above (more than one accepted); a mismatch
 removes the temp file and returns non-zero; only verified bytes are renamed
 into place. Unpacking happens after that check, never before. md5 is not
 accepted anywhere: a 32-char expected digest is refused by name.
+
+A download whose `Content-Length` exceeds the process file-size limit
+(`ulimit -f`, which is a hard cap a sandbox can pin and no process can raise)
+is fetched as numbered ranges under that limit and read back as a stream, so a
+file larger than the limit is installed without ever being written as one file.
+The digest is taken over the concatenated parts, and a `.tar.*` is unpacked from
+the stream; a `.zip` above the limit is refused, because its directory is at the
+end and it cannot be read as a stream. `SANDHOME_FETCH_CHUNK_MB` tunes the
+range size (default 256, capped at three quarters of the limit).

@@ -81,13 +81,16 @@ sh_env_body() {
     printf '# must be exec-capable, and that is what SANDHOME_EXEC is.\n'
     printf '#\n'
     printf '# Shims load ONLY when SANDHOME_SHIMS is set to something other than\n'
-    printf '# 0. They are opt-in and MUST stay opt-in: fakepty reports fds 0-2 as\n'
-    printf '# a terminal, so every colourising program then colourises a PIPE.\n'
-    printf '# Measured with the shim forced on:\n'
-    printf '#   LD_PRELOAD=fakepty.so jq -n {ok:1}   -> ANSI codes inside the JSON\n'
-    printf '# which breaks jq -r, git, ls --color=auto and every other consumer\n'
-    printf '# that reads a pipe. One shim that makes a terminal-aware tool look\n'
-    printf '# interactive is a worse default than a session without echo.\n'
+    printf '# 0. They are opt-in. fakepty reports the SESSION descriptors as a\n'
+    printf '# terminal, which is what an interactive shell wants, and\n'
+    printf '# SANDHOME_FAKEPTY_ID scopes that to them: a pipe a program opens later\n'
+    printf '# is a new object and stays a pipe, so:\n'
+    printf '#   SANDHOME_SHIMS=1; jq -n {ok:1} | cat   -> cat still reads JSON\n'
+    printf '# Without the variable the interposer falls back to fds 0-2, which is\n'
+    printf '# how the shim used to colourise a pipe. It is still opt-in because a\n'
+    printf '# scoped session reports the operator channel as a terminal, which is a\n'
+    printf '# real change for a script that reads it.\n'
+    printf 'export SANDHOME_FAKEPTY=${SANDHOME_FAKEPTY:-%s}\n' "$(sh_sq_quote "$SH_HOME/shims/fakepty.so")"
     printf 'case "${SANDHOME_SHIMS:-}" in\n'
     printf '  ""|0|no|off|false) ;;\n'
     printf '  *)\n'
@@ -105,6 +108,22 @@ sh_env_body() {
     printf '      done\n'
     printf '      unset _sh_shim_f\n'
     printf '      export LD_PRELOAD\n'
+    printf '      # The identity of this shell descriptors, so the interposer\n'
+    printf '      # fakes THESE and not a pipe opened later. /proc/<pid>/fd, not\n'
+    printf '      # /proc/self/fd, because readlink runs as a child whose fd 1 is\n'
+    printf '      # the command-substitution pipe.\n'
+    printf '      if [ -z "${SANDHOME_FAKEPTY_ID:-}" ] && [ -d "/proc/$$/fd" ] && command -v readlink >/dev/null 2>&1; then\n'
+    printf '        _sh_ids=\n'
+    printf '        for _sh_fd in 0 1 2; do\n'
+    printf '          _sh_id=$(readlink "/proc/$$/fd/$_sh_fd" 2>/dev/null || true)\n'
+    printf '          [ -n "$_sh_id" ] && _sh_ids="$_sh_ids $_sh_id"\n'
+    printf '        done\n'
+    printf '        if [ -n "$_sh_ids" ]; then\n'
+    printf '          SANDHOME_FAKEPTY_ID=${_sh_ids# }\n'
+    printf '          export SANDHOME_FAKEPTY_ID\n'
+    printf '        fi\n'
+    printf '        unset _sh_ids _sh_fd _sh_id\n'
+    printf '      fi\n'
     printf '    fi\n'
     printf '    ;;\n'
     printf 'esac\n'
@@ -272,6 +291,40 @@ sh_install_profile() {
     sh_pl_line=$(sh_profile_source_line)
     sh_append_login "$sh_pl_line" "$SH_HOME/profile.sh"
     sh_append_rc "$sh_pl_line" "$SH_HOME/profile.sh"
+    return 0
+}
+
+# sh_exec_install_launchers -> put sandhome and errandsh on the chosen exec bin.
+# STOP: ONLY THE BOOTSTRAP USED TO PLACE THE LAUNCHER. A create plan can move the
+# exec root (a new box, a cleared tmpfs, a root that filled and was replaced),
+# and `sandhome install` then rebuilt views on the new root while `sandhome`
+# itself stayed on the old one: the next shell got `command not found` for the
+# very command that had just run. Copying the two launchers here makes whichever
+# root the plan chose self-contained, on the repair path as well as the first
+# install (#41).
+sh_exec_install_launchers() {
+    sh_eil_bin=${SH_EXEC_BIN:-}
+    sh_eil_repo=${SH_REPO_DIR:-}
+    [ -n "$sh_eil_bin" ] || return 0
+    [ -n "$sh_eil_repo" ] || return 0
+    [ "${SH_DRY_RUN:-0}" = 1 ] && return 0
+    mkdir -p "$sh_eil_bin" 2>/dev/null || return 0
+    sh_eil_src="$sh_eil_repo/bin/sandhome"
+    if [ -r "$sh_eil_src" ] && [ "$(sh_lex_normalize "$sh_eil_src")" != "$(sh_lex_normalize "$sh_eil_bin/sandhome")" ]; then
+        cp -f "$sh_eil_src" "$sh_eil_bin/sandhome" 2>/dev/null && \
+            chmod 0755 "$sh_eil_bin/sandhome" 2>/dev/null || true
+    fi
+    # faketty as well as errandsh: errandsh finds it beside itself, so both
+    # copies are needed for a full-screen program to work from the exec root.
+    for sh_eil_rel in shell/errandsh shell/faketty; do
+        sh_eil_src="$sh_eil_repo/$sh_eil_rel"
+        sh_eil_dst="$sh_eil_bin/${sh_eil_rel##*/}"
+        if [ -r "$sh_eil_src" ] && [ "$(sh_lex_normalize "$sh_eil_src")" != "$(sh_lex_normalize "$sh_eil_dst")" ]; then
+            cp -f "$sh_eil_src" "$sh_eil_dst" 2>/dev/null && \
+                chmod 0755 "$sh_eil_dst" 2>/dev/null || true
+        fi
+    done
+    unset sh_eil_rel sh_eil_src sh_eil_dst
     return 0
 }
 

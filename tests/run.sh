@@ -28,7 +28,7 @@ PASSED=''
 # failing suite was green. tests/harness.sh now measures that directly; running
 # it first means a break in the harness is visible before it is mistaken for
 # anything else.
-for t in harness syntax unit space toolchain shims docs bootstrap errandsh-posix; do
+for t in harness syntax unit space fetch toolchain shims docs bootstrap errandsh-posix; do
     script="$HERE/$t.sh"
     [ -r "$script" ] || continue
     printf '\n#### %s\n' "$t"

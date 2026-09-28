@@ -71,14 +71,14 @@ the four cases the mirror has to get right, are in
 | [`ROUTE.md`](ROUTE.md) | **the consumer entry point**: one paste that sets up, checks, and routes. A human pastes its raw URL and the task, and nothing else. |
 | [`AGENTS.md`](AGENTS.md) | orientation for an agent working on this repository |
 | [`skills/sandhome/SKILL.md`](skills/sandhome/SKILL.md) | **the entry point for an agent setting up a sandbox** |
-| [`skills/errandsh/SKILL.md`](skills/errandsh/SKILL.md) | a line discipline for a session with no pty |
+| [`skills/errandsh/SKILL.md`](skills/errandsh/SKILL.md) | a line discipline for a session with no pty, with full-screen programs via a userspace pty |
 | [`skills/sealed-sandbox/SKILL.md`](skills/sealed-sandbox/SKILL.md) | operating inside a cage: no bind, no pty, no passwd |
 | `bootstrap.sh` | the installer. Self-fetching when piped. |
 | `bin/sandhome` | the command. A bootstrap copies it to `$SANDHOME_EXEC/bin`. |
 | `lib/` | the POSIX-sh library: `common`, `detect`, `space`, `fetch`, `env`, `toolchain`, `shim`, `report`, `profile`. |
 | `tools/` | one module per toolchain: `jq`, `ripgrep`, `fd`, `python`, `node`, `rust`, `go`. |
-| `shims/` | `fakepty` (an isatty/termios interposer) and `fakepwd` (a synthetic passwd database). |
-| `shell/errandsh` | a POSIX-sh line discipline for a pty-less SSH session. |
+| `shims/` | `fakepty` (a userspace pty: isatty/termios/window size/`dev/tty`) and `fakepwd` (a synthetic passwd database). |
+| `shell/errandsh` | a POSIX-sh line discipline for a pty-less SSH session, with `shell/faketty` as the userspace-pty wrapper. |
 | [`docs/reference.md`](docs/reference.md) | **generated**: every command, flag and variable, extracted from the code. |
 | [`docs/architecture.md`](docs/architecture.md) | how the pieces fit and why they are shaped this way. |
 | [`docs/guide.md`](docs/guide.md) | the long form: every option, every failure mode. |

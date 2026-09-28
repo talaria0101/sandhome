@@ -278,8 +278,10 @@ fi
 # the exec root. A PATH entry pointing at the checkout gives a command that
 # answers `command -v` and then fails: measured, `sh: sandhome: Permission
 # denied`. The clause runs the installed copy from a bare environment.
-cmd_home=$work/cmd-home
+cmd_fake_home=$work/cmd-fake-home
+cmd_home=$cmd_fake_home/.local/share/sandhome
 cmd_exec=$work/cmd-exec
+mkdir -p "$cmd_fake_home"
 SANDHOME_HOME="$cmd_home" SANDHOME_EXEC="$cmd_exec" \
     sh "$ROOT/bootstrap.sh" --toolset minimal --no-profile --no-path-line --no-shell \
     >/dev/null 2>/dev/null
@@ -293,6 +295,41 @@ if [ -r "$cmd_home/env.sh" ]; then
         *) t_ok 1 "the installed sandhome is found on the exec root, not the checkout (got $byname)" ;;
     esac
     t_contains "$byname" 'sandhome/1' 'a bare env.sh shell can run sandhome by name'
+
+    # # STOP: `eval "$(sandhome env)"` WORKS IN A SHELL THAT SOURCED NOTHING.
+    # ROUTE.md step 4 offers the eval form for a shell where sourcing is not
+    # possible, and it is the form a tool harness uses: no .profile, no .bashrc,
+    # no variables set. The copy PATH names lives on the exec root, where "the
+    # parent of $0" is the exec root and there is no lib/ under it, so with no
+    # SANDHOME_REPO_DIR in the environment the command could not find its own
+    # library and printed
+    #   sandhome: no library under /tmp; set SANDHOME_REPO
+    # naming a variable that is documented as the owner/name slug to fetch from
+    # a pipe, not a path, so following the error could not work either. The eval
+    # was therefore impossible exactly where the docs recommend it.
+    #
+    # Both roots are discoverable without being told: the copy is on the exec
+    # root, and the home is where the env file that would have said so lives.
+    bare=$(env -i HOME="$cmd_fake_home" PATH="$cmd_exec/bin:/usr/bin:/bin" \
+           sh -c 'eval "$(sandhome env)"; printf "%s|%s" "$SANDHOME_EXEC" "$SANDHOME_REPO_DIR"' \
+           </dev/null 2>&1)
+    case "$bare" in
+        "$cmd_exec"*) t_ok 0 'a shell that sourced nothing can eval sandhome env' ;;
+        *) t_ok 1 "a shell that sourced nothing can eval sandhome env (got $bare)" ;;
+    esac
+    case "$bare" in
+        *"|$ROOT") t_ok 0 'the eval form finds the checkout and reports it' ;;
+        *) t_ok 1 "the eval form finds the checkout and reports it (got $bare)" ;;
+    esac
+
+    # The error a real consumer sees when there is genuinely no checkout must
+    # name the variable that resolves one.
+    nomsg=$(env -i HOME=/nonexistent-home-xyz PATH="$cmd_exec/bin:/usr/bin:/bin" \
+            sh -c 'sandhome version' </dev/null 2>&1)
+    case "$nomsg" in
+        *SANDHOME_REPO_DIR*) t_ok 0 'the missing-library error names SANDHOME_REPO_DIR' ;;
+        *) t_ok 1 "the missing-library error names SANDHOME_REPO_DIR (got $nomsg)" ;;
+    esac
 else
     t_skip 'no home to check the installed command against'
 fi
@@ -368,4 +405,62 @@ case "$doc_out2" in
 esac
 
 rm -rf "$home" 2>/dev/null
+# # STOP: RE-BOOTSTRAPPING WITH A DIFFERENT EXEC ROOT REPLACES THE PATH BLOCK
+# INSTEAD OF ADDING A SECOND ONE. sh_append_once de-duplicates an IDENTICAL
+# line, and a different exec root is a different line, so moving the root left
+# every previous block in place:
+#   # Added by bootstrap.
+#   export PATH="/dev/shm/bin:$PATH"
+#   # Added by bootstrap.
+#   if [ -r '...profile.sh' ]; then . '...profile.sh'; fi
+#   # Added by bootstrap.
+#   export PATH="/tmp/bin:$PATH"
+# Three blocks, of which the first points at an exec root nothing maintains any
+# more, and the superseded root keeps a full bin/ and views/ that nothing names
+# or removes (issue #41). The line a consumer reads first is the one that is
+# wrong, because PATH is prepended and the stale root wins.
+mv_home=$work/movehome
+mv_fake_home=$work/move-fake-home
+mv_exec_a=$work/move-exec-a
+mv_exec_b=$work/move-exec-b
+rm -rf "$mv_home" "$mv_fake_home" "$mv_exec_a" "$mv_exec_b"
+mkdir -p "$mv_fake_home"
+HOME="$mv_fake_home" SANDHOME_HOME="$mv_home" SANDHOME_EXEC="$mv_exec_a" \
+    sh "$ROOT/bootstrap.sh" --toolset minimal --no-shims >/dev/null 2>/dev/null
+HOME="$mv_fake_home" SANDHOME_HOME="$mv_home" SANDHOME_EXEC="$mv_exec_b" \
+    sh "$ROOT/bootstrap.sh" --toolset minimal --no-shims >/dev/null 2>/dev/null
+if [ -r "$mv_fake_home/.profile" ]; then
+    n=$(grep -c 'Added by bootstrap' "$mv_fake_home/.profile" 2>/dev/null || printf 0)
+    # One block for the exec root, one for the profile fragment. Anything more
+    # means a superseded root is still on PATH.
+    if [ "$n" -le 2 ]; then
+        t_ok 0 'a re-bootstrap with a new exec root does not stack PATH blocks'
+    else
+        t_ok 1 "a re-bootstrap with a new exec root does not stack PATH blocks ($n blocks)"
+    fi
+    if grep -q "$mv_exec_a" "$mv_fake_home/.profile" 2>/dev/null; then
+        t_ok 1 'the superseded exec root is gone from .profile'
+    else
+        t_ok 0 'the superseded exec root is gone from .profile'
+    fi
+    if grep -q "$mv_exec_b" "$mv_fake_home/.profile" 2>/dev/null; then
+        t_ok 0 'the current exec root is on .profile'
+    else
+        t_ok 1 'the current exec root is on .profile'
+    fi
+    # A login shell must end up with the CURRENT root first, not the stale one.
+    login_path=$(HOME="$mv_fake_home" sh -c '. "$HOME/.profile" 2>/dev/null; printf "%s" "$PATH"' 2>/dev/null)
+    # Compared with a prefix test rather than a case pattern: a quoted variable
+    # inside a case PATTERN is a literal, not an expansion, so a pattern written
+    # this way silently never matches and the clause fails against correct code.
+    login_first=${login_path%%:*}
+    if [ "$login_first" = "$mv_exec_b/bin" ]; then
+        t_ok 0 'a login shell resolves the current exec root first'
+    else
+        t_ok 1 "a login shell resolves the current exec root first (got $login_first)"
+    fi
+else
+    t_skip 'no .profile to check the exec-root move against'
+fi
+
 t_end

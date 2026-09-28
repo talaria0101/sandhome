@@ -214,10 +214,20 @@ else
 fi
 if command -v rustc >/dev/null 2>&1; then
     sh_toolchain_load rust >/dev/null 2>&1
-    if tc_rust_behavioural >/dev/null 2>&1; then
-        t_ok 0 'rust behavioural probe links and runs native (#19)'
+    # # STOP: A rustc PROXY WITH NO DEFAULT TOOLCHAIN IS NOT A rustc. On a host
+    # whose /usr/bin/rustc is rustup's proxy, `rustc --version` fails and
+    # tc_rust_probe (the same test the installer uses) is false; calling the
+    # behavioural probe then reported a tree defect for a tool that is not
+    # installed here. Gate on the module's own probe, so the clause measures the
+    # tree when a working rustc is present and skips when it is not.
+    if tc_rust_probe >/dev/null 2>&1; then
+        if tc_rust_behavioural >/dev/null 2>&1; then
+            t_ok 0 'rust behavioural probe links and runs native (#19)'
+        else
+            t_ok 1 'rust behavioural probe links and runs native (#19)'
+        fi
     else
-        t_ok 1 'rust behavioural probe links and runs native (#19)'
+        t_skip 'rust behavioural probe: no working rustc on this host'
     fi
 else
     t_skip 'rust behavioural probe: no rustc on this host'
@@ -366,5 +376,142 @@ fi
 SELFLINK
 sh "$work/selftest.sh" "$ROOT" "$sel_dir" 2>/dev/null)
 t_is "$self_link" 'linked' 'the promote step does not link the exec view onto itself (#43)'
+
+# # STOP: `repair` FIXES A SELF-LINKED VIEW, AND DOWNLOADS NOTHING. The whole
+# consumer-facing diagnosis routed step 2 through `sandhome install <name>`, and
+# on a host with an adopted toolchain that is the command that BROKE the view,
+# so following the documented procedure reproduced the defect 8 rounds out of 8
+# (issues #49, #43). `repair` is the command the docs name instead, and these
+# clauses hold it to that: a view whose links point at themselves is repaired,
+# and no download is attempted.
+#
+# A link that points at itself is invisible to `[ -e ]` on a shell that follows
+# the link silently, which is why it survived for so long. This breaks the view
+# the way a real one breaks and then checks the tool runs afterwards.
+rep_home=$sel_dir/repair-home
+rep_exec=$sel_dir/repair-exec
+rm -rf "$rep_home" "$rep_exec"
+mkdir -p "$rep_home" "$rep_exec/bin" "$sel_dir/repair-real"
+printf '#!/bin/sh\necho jq-1.8.2 2>/dev/null\n' > "$sel_dir/repair-real/jq"
+chmod 755 "$sel_dir/repair-real/jq"
+ln -s "$rep_exec/bin/jq" "$rep_exec/bin/jq"
+
+out=$( SANDHOME_HOME="$rep_home" SANDHOME_EXEC="$rep_exec" \
+       SANDHOME_REPO_DIR="$ROOT" SH_REPO_DIR="$ROOT" \
+       PATH="$rep_exec/bin:$sel_dir/repair-real:/usr/bin:/bin" \
+       sh "$ROOT/bin/sandhome" repair jq 2>&1 )
+rc=$?
+if [ -L "$rep_exec/bin/jq" ]; then
+    t=$(readlink "$rep_exec/bin/jq")
+    case "$t" in
+        "$rep_exec"/*) t_ok 1 "repair rewrites a self-linked view link (got $t)" ;;
+        *) t_ok 0 'repair rewrites a self-linked view link' ;;
+    esac
+    if "$rep_exec/bin/jq" --version >/dev/null 2>&1; then
+        t_ok 0 'the repaired tool runs from the exec view'
+    else
+        t_ok 1 'the repaired tool runs from the exec view'
+    fi
+else
+    t_ok 1 'repair rewrites a self-linked view link (no link)'
+    t_ok 1 'the repaired tool runs from the exec view'
+fi
+case "$out" in
+    *Downloaded*) t_ok 1 'repair downloads nothing' ;;
+    *) t_ok 0 'repair downloads nothing' ;;
+esac
+
+# An unknown name is refused by name and the command still exits non-zero,
+# rather than silently repairing whatever it felt like.
+bad_out=$( SANDHOME_HOME="$rep_home" SANDHOME_EXEC="$rep_exec" \
+           SANDHOME_REPO_DIR="$ROOT" SH_REPO_DIR="$ROOT" \
+           PATH="$rep_exec/bin:$sel_dir/repair-real:/usr/bin:/bin" \
+           sh "$ROOT/bin/sandhome" repair nosuchtoolchain 2>&1 )
+bad_rc=$?
+t_contains "$bad_out" 'unknown toolchain nosuchtoolchain' 'repair names an unknown toolchain'
+if [ "$bad_rc" -ne 0 ]; then
+    t_ok 0 'repair exits non-zero on an unknown toolchain'
+else
+    t_ok 1 'repair exits non-zero on an unknown toolchain'
+fi
+
+# # STOP: A TOOLCHAIN THAT ANSWERS --version AND REFUSES TO COMPILE IS NOT A
+# TOOLCHAIN, AND IS NOT ADOPTED. Some sealed sandboxes ship a multi-arch rust as
+# a shim that answers `--version` and refuses everything else, which is what
+# tc_rust_probe asks: `sh_have rustc && rustc --version`. So the probe passed, the
+# adopt path was taken, `sandhome install rust` exited 0 and printed
+# "a working copy is already here; adopting it", and the first build the
+# consumer attempted failed (issue #53). Measured here with exactly that shim:
+#   rustc --version   -> rustc 1.99.0 (proxy build 2026-01-01)
+#   rustc hello.rs    -> proxy rustc: refusing, not a compiler   (exit 1)
+#   sandhome install rust -> exit 0
+#   sandhome report       -> toolchain.rust=rustc 1.99.0 (proxy build 2026-01-01)
+# A report line naming a working version is the tree's own refusal to be soothed:
+# the module already has a behavioural probe, and it was gated on a noexec home,
+# which is not what is wrong here. The probe is what the decision needs, because
+# the thing being decided is whether this copy can build.
+mkdir -p "$work/proxybin"
+cat > "$work/proxybin/rustc" <<'PROXY'
+#!/bin/sh
+case "${1:-}" in
+    --version|-V) echo "rustc 1.99.0 (proxy build 2026-01-01)"; exit 0 ;;
+esac
+echo "proxy rustc: refusing, not a compiler" >&2
+exit 1
+PROXY
+chmod 0755 "$work/proxybin/rustc"
+
+cat > "$work/proxyprobe.sh" <<EOF
+for m in common detect space fetch env toolchain; do
+    . "$ROOT/lib/\$m.sh"
+done
+sh_toolchain_load rust
+printf 'BEHAVIOURAL=%s\n' "\$(tc_rust_behavioural >/dev/null 2>&1 && printf 0 || printf 1)"
+# The decision, not just the helper: this is what sh_toolchain_ensure asks.
+if tc_rust_probe >/dev/null 2>&1; then
+    printf 'PROBE=adopt\n'
+else
+    printf 'PROBE=install\n'
+fi
+EOF
+proxy_probe=$(SH_LIB_DIR="$ROOT/lib" SH_REPO_DIR="$ROOT" \
+    SH_HOME_TOOLCHAINS="$work/tc" SH_EXEC="$work/exec" SH_HOME="$work/home" \
+    SH_EXEC_BIN="$work/exec/bin" SH_EXEC_VIEWS="$work/exec/views" \
+    SH_HOME_TMP="$work/home/tmp" SH_HOME_EXEC=yes SH_DRY_RUN=1 SH_SELF=test \
+    PATH="$work/proxybin:$PATH" sh "$work/proxyprobe.sh" 2>/dev/null)
+t_contains "$proxy_probe" 'BEHAVIOURAL=1' \
+    'a rustc that refuses to compile fails the behavioural probe despite answering --version'
+t_contains "$proxy_probe" 'PROBE=install' \
+    'a proxy rustc is not adopted, so a real toolchain is installed instead (#53)'
+
+# The control, which matters as much: a rustc that really compiles must still be
+# adopted, or the fix is just "never adopt rust" and every host pays a download.
+# It is a stub rather than the host's rustc so the clause means the same thing
+# everywhere, including on a host with no compiler at all.
+mkdir -p "$work/realbin"
+cat > "$work/realbin/rustc" <<'REALC'
+#!/bin/sh
+case "${1:-}" in
+    --version|-V) echo "rustc 1.99.0 (real build)"; exit 0 ;;
+esac
+# -o FILE: write a runnable program, which is what the probe actually checks.
+out=./a.out
+prev=''
+for a in "$@"; do
+    [ "$prev" = -o ] && out=$a
+    prev=$a
+done
+printf '#!/bin/sh\nexit 0\n' > "$out" 2>/dev/null || exit 1
+chmod 0755 "$out" 2>/dev/null
+exit 0
+REALC
+chmod 0755 "$work/realbin/rustc"
+real_probe=$(SH_LIB_DIR="$ROOT/lib" SH_REPO_DIR="$ROOT" \
+    SH_HOME_TOOLCHAINS="$work/tc" SH_EXEC="$work/exec" SH_HOME="$work/home" \
+    SH_EXEC_BIN="$work/exec/bin" SH_EXEC_VIEWS="$work/exec/views" \
+    SH_HOME_TMP="$work/home/tmp" SH_HOME_EXEC=yes SH_DRY_RUN=1 SH_SELF=test \
+    PATH="$work/realbin:$PATH" sh "$work/proxyprobe.sh" 2>/dev/null)
+t_contains "$real_probe" 'PROBE=adopt' \
+    'a rustc that compiles is still adopted, so the probe costs no download'
 
 t_end

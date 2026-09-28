@@ -12,6 +12,13 @@
 # a shebang. dash is the one that matters, and it is the one that found every
 # bug this file has ever had.
 #
+# STOP: IT ALSO DRIVES A FULL-SCREEN PROGRAM, WHICH IS THE PART THAT USED TO BE
+# NAMED AS IMPOSSIBLE. There is no /dev/ptmx, so the kernel pty faketty(1) and
+# fakepty(1) ask for cannot be made. shims/fakepty.c is a USERSPACE pty, and the
+# fixture below proves a program gets isatty(), a termios, a window size, the
+# alternate screen and a keypress through it. The clause is skipped, and named,
+# when the host has no C compiler to build the interposer with.
+#
 #   ./tests/errandsh-posix.sh
 #
 # Exit: 0 every shell passed, 1 one failed, 2 could not run.
@@ -186,6 +193,42 @@ ck("hi" in r, "Tab completes a command name", repr(r[-60:].strip()))
 r = send(b'echo "quoted"\n')
 ck("quoted" in r, "quotes reach the child intact", repr(r[-60:].strip()))
 
+# # STOP: A FULL-SCREEN PROGRAM IS DRIVEN HERE, BECAUSE THAT IS THE CLAIM. The
+# cage has no /dev/ptmx, so the kernel pty faketty(1)/fakepty(1) use cannot be
+# made; shims/fakepty.c is a userspace one. The fixture asks for isatty, a
+# termios and a window size, draws the alternate screen, waits for a key, and
+# leaves, so the clause fails if any of those is missing.
+fs_shim = os.environ.get("ERRANDSH_TEST_FAKEPTY")
+if fs_shim:
+    fixture = os.path.join(HOME, "fs_probe.py")
+    with open(fixture, "w") as fh:
+        fh.write(
+            "import os, sys, termios, fcntl, struct\n"
+            "print('FS-ISATTY=%d' % (1 if os.isatty(0) and os.isatty(1) else 0))\n"
+            "termios.tcgetattr(0)\n"
+            "w = struct.unpack('HHHH', fcntl.ioctl(1, termios.TIOCGWINSZ, b'\\0'*8))\n"
+            "print('FS-WIN=%dx%d' % (w[1], w[0]))\n"
+            "sys.stdout.write('\\033[?1049h'); sys.stdout.flush()\n"
+            "os.read(0, 1)\n"
+            "sys.stdout.write('\\033[?1049l'); sys.stdout.flush()\n"
+            "print('FS-DONE')\n"
+        )
+    r = send(("pty python3 %s\n" % fixture).encode())
+    ck("FS-ISATTY=1" in r, "a full-screen program sees a terminal (isatty)", repr(r[-80:].strip()))
+    ck("FS-WIN=" in r, "it gets a window size", repr(r[-80:].strip()))
+    ck("\x1b[?1049h" in r, "it enters the alternate screen", repr(r[-40:].strip()))
+    r = send(b"k")
+    ck("\x1b[?1049l" in r, "it leaves the alternate screen on a key", repr(r[-40:].strip()))
+    ck("FS-DONE" in r, "the session resumes after the program", repr(r[-60:].strip()))
+    r = send(b"echo PTY-AFTER\n")
+    ck("PTY-AFTER" in r, "the line discipline still runs commands afterwards", repr(r[-60:].strip()))
+    # The inner pipe must stay a pipe: a program piping into another is not a
+    # terminal, and saying it is puts ANSI codes into the consumer.
+    r = send(b"pty sh -c 'echo DATA | (if [ -t 0 ]; then echo PIPED-TTY; else echo PIPED-PIPE; fi)'\n")
+    ck("PIPED-PIPE" in r, "an inner pipe inside the pty is still a pipe", repr(r[-60:].strip()))
+else:
+    print("  skip no fakepty shim built (no C compiler)")
+
 send(b"\x04", 0.4)
 time.sleep(1.0)
 rc = p.poll()
@@ -199,6 +242,21 @@ sys.exit(1 if fails else 0)
 PYEOF
 
 pass=0; fail=0
+
+# Build the userspace-pty interposer for the full-screen clauses when a compiler
+# is present. Without one those clauses are skipped and named by the driver, not
+# silently passed.
+FAKEPTY=""
+if command -v cc >/dev/null 2>&1 || command -v gcc >/dev/null 2>&1; then
+    mkdir -p "$WORK/shims"
+    cc -shared -fPIC -O2 -o "$WORK/shims/fakepty.so" "$ROOT/shims/fakepty.c" 2>/dev/null || \
+        gcc -shared -fPIC -O2 -o "$WORK/shims/fakepty.so" "$ROOT/shims/fakepty.c" 2>/dev/null || true
+    [ -r "$WORK/shims/fakepty.so" ] && FAKEPTY="$WORK/shims/fakepty.so"
+fi
+export ERRANDSH_TEST_FAKEPTY="$FAKEPTY"
+export SANDHOME_REPO_DIR="$ROOT"
+export SANDHOME_FAKEPTY="$FAKEPTY"
+
 for entry in $SHELLS; do
     name=${entry%%:*}
     shcmd=$entry

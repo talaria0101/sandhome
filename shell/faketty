@@ -1,0 +1,84 @@
+#!/bin/sh
+# faketty - run a command with a userspace pty, where the kernel has none.
+#
+# A sealed cage has no /dev/ptmx and no devpts, so faketty(1) and fakepty(1),
+# which both allocate a KERNEL pty with openpty(3), fail with "out of pty
+# devices". This is the version that works without one: it exports the
+# LD_PRELOAD interposer in shims/fakepty.c, which is a userspace pty, and then
+# execs the command. Because it is exported and exec'd, a subshell the command
+# spawns keeps the terminal.
+#
+#   faketty nano file
+#   faketty top
+#   faketty sh -c 'top -b | head'    # the inner pipe is still a pipe
+#
+# SANDHOME_FAKEPTY_ID is the important part. It names the readlink() identity of
+# the session's own descriptors, so the interposer treats THOSE as a terminal
+# and nothing else. A program that pipes its output into another program creates
+# a new pipe, that pipe is not in the list, and it stays a pipe: `faketty sh -c
+# 'jq -n 1 | cat'` does not put ANSI codes into cat's input. Without the
+# variable the interposer falls back to treating fds 0-2 as a terminal, which is
+# the older behaviour.
+#
+#   SANDHOME_FAKEPTY        the .so to load. Default: found from the home.
+#   SANDHOME_FAKEPTY_SIZE   COLSxROWS. Default: COLUMNSxLINES, then 80x24.
+#   SANDHOME_FAKEPTY_CRLF   set to 0 to stop \n -> \r\n translation.
+#
+# Exit: the command's status, or 2 when called with no command, or 127 when the
+# interposer cannot be found (a cage with no compiler has no .so; the error
+# names the path so the fix is `sandhome shims`).
+set -u
+
+if [ "$#" -eq 0 ]; then
+    echo "usage: faketty COMMAND [ARG...]" >&2
+    exit 2
+fi
+
+shim=${SANDHOME_FAKEPTY:-}
+if [ -z "$shim" ]; then
+    for d in \
+        "${SANDHOME_HOME:-}/shims" \
+        "${XDG_DATA_HOME:-}/sandhome/shims" \
+        "$HOME/.local/share/sandhome/shims" \
+        "$HOME/.sandhome/shims" \
+        "${0%/*}/../shims"
+    do
+        [ -n "$d" ] || continue
+        if [ -r "$d/fakepty.so" ]; then
+            shim=$d/fakepty.so
+            break
+        fi
+    done
+fi
+if [ -z "$shim" ] || [ ! -r "$shim" ]; then
+    echo "faketty: no fakepty.so (looked at SANDHOME_FAKEPTY and the sandhome shims directory); run 'sandhome shims build'" >&2
+    exit 127
+fi
+
+# The identity of the descriptors this command will inherit. /proc/<pid>/fd is
+# used rather than /proc/self/fd because readlink itself is a child process
+# whose fd 1 is a command-substitution pipe, which would name the wrong object.
+if [ -z "${SANDHOME_FAKEPTY_ID:-}" ] && [ -d "/proc/$$/fd" ] && command -v readlink >/dev/null 2>&1; then
+    ids=''
+    for fd in 0 1 2; do
+        id=$(readlink "/proc/$$/fd/$fd" 2>/dev/null || true)
+        [ -n "$id" ] && ids="$ids $id"
+    done
+    [ -n "$ids" ] && SANDHOME_FAKEPTY_ID=${ids# }
+fi
+
+# Honour the caller's terminal size when it gave one; the interposer defaults to
+# 80x24 when nothing names a size.
+if [ -z "${SANDHOME_FAKEPTY_SIZE:-}" ] && [ -n "${COLUMNS:-}" ] && [ -n "${LINES:-}" ]; then
+    SANDHOME_FAKEPTY_SIZE="${COLUMNS}x${LINES}"
+fi
+
+case ":${LD_PRELOAD:-}:" in
+    *":$shim:"*) ;;
+    *) LD_PRELOAD="$shim${LD_PRELOAD:+ $LD_PRELOAD}" ;;
+esac
+export LD_PRELOAD
+[ -n "${SANDHOME_FAKEPTY_ID:-}" ] && export SANDHOME_FAKEPTY_ID
+[ -n "${SANDHOME_FAKEPTY_SIZE:-}" ] && export SANDHOME_FAKEPTY_SIZE
+
+exec "$@"

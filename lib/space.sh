@@ -108,7 +108,10 @@ sh_home_default() {
 
 # sh_exec_candidates -> the places tried for the exec root, best first. The
 # environment override wins, then the home itself, then every writable tmpfs
-# that is usually tmpfs, then a directory under the home.
+# that is usually tmpfs, then a directory under the home. The order is a
+# preference, NOT the decision: sh_space_plan ranks the working candidates by
+# free space and picks the roomiest, because a name earlier in this list is not
+# evidence of room (issue #37).
 #
 # NOTE: ONE LIST AND ONE DEDUPE, BECAUSE TWO LISTS DRIFT. The plan and the probe
 # report each built their own candidate string and they disagreed: the plan did
@@ -140,13 +143,36 @@ sh_exec_candidates() {
     printf '%s' "$sh_ec_out"
 }
 
+# sh_space_recorded_exec -> the SANDHOME_EXEC recorded in $SH_HOME/env.sh, or
+# nothing. The plan reuses it so a later install does not migrate the exec root
+# and orphan the views and launchers on the old one (issue #41). Parsed with the
+# shell's own read, because the library may not use grep.
+sh_space_recorded_exec() {
+    sh_sre_out=''
+    [ -r "$SH_HOME/env.sh" ] || {
+        printf ''
+        return 0
+    }
+    while IFS= read -r sh_sre_l; do
+        case "$sh_sre_l" in
+            SANDHOME_EXEC=*)
+                sh_sre_out=${sh_sre_l#SANDHOME_EXEC=}
+                sh_sre_out=${sh_sre_out#\'}
+                sh_sre_out=${sh_sre_out%\'}
+                ;;
+        esac
+    done < "$SH_HOME/env.sh"
+    printf '%s' "$sh_sre_out"
+}
+
 # sh_space_plan -> set SH_HOME and SH_EXEC, create both, and export them. The
-# exec root is the first candidate that is writable and actually runs a file;
-# free space prefers a candidate with room but does not disqualify the only one,
-# sh_space_plan [--no-create] -> set SH_HOME and SH_EXEC, create both, and export
-# them. The exec root is the first candidate that is writable and actually runs a
-# file; free space prefers a candidate with room but does not disqualify the only
-# one, because a small exec root that works beats a large one that does not.
+# exec root is the ROOMIEST candidate that is writable and actually runs a file
+# and clears SANDHOME_MIN_EXEC_MB; when none clears it, the first working one is
+# used with a warning, because a small exec root that works beats a large one
+# that does not. Order in sh_exec_candidates is only a tie-break: preferring the
+# first candidate that merely clears the floor put /dev/shm (184MB) ahead of
+# /tmp (488MB) on a host where the guide names /tmp the default, and the default
+# --toolset developer then failed for want of room (issue #37).
 #
 # # STOP: `--no-create` ANSWERS WITHOUT CHANGING THE MACHINE, BECAUSE A QUESTION
 # ABOUT A ROOT IS NOT A REQUEST TO BUILD ONE. The planner used to mkdir both
@@ -201,12 +227,29 @@ sh_space_plan() {
         SH_HOME_EXEC=unknown
     fi
 
+    # # STOP: A RECORDED EXEC ROOT IS REUSED, BECAUSE FREE SPACE IS NOT STABLE.
+    # The first plan picks the roomiest (issue #37), but free space moves as
+    # views and caches are written, so a fresh ranking on every install could
+    # migrate the exec root and orphan the views, caches, launchers and PATH
+    # entry on the old one. env.sh records the choice; while that root still runs
+    # a file it wins, whether or not it is the roomiest. Only a root that is
+    # gone or refuses exec falls back to the ranking, and --exec / SANDHOME_EXEC
+    # overrides both.
+    sh_sp_recorded=$(sh_space_recorded_exec)
+    sh_sp_candidates=$(sh_exec_candidates)
+    if [ -n "$sh_sp_recorded" ]; then
+        case " $sh_sp_candidates " in
+            *" $sh_sp_recorded "*) ;;
+            *) sh_sp_candidates="$sh_sp_recorded $sh_sp_candidates" ;;
+        esac
+    fi
     sh_sp_first_working=''
     sh_sp_first_roomy=''
     sh_sp_roomy_mb=0
+    sh_sp_sticky=''
     sh_sp_explicit_ok=0
     sh_sp_tried=''
-    for sh_sp_candidate in $(sh_exec_candidates); do
+    for sh_sp_candidate in $sh_sp_candidates; do
         [ -n "$sh_sp_candidate" ] || continue
         sh_sp_tried="$sh_sp_tried$sh_sp_candidate "
         # # STOP: THE FLAG IS INITIALISED BEFORE THE BRANCH THAT MAY `continue`
@@ -254,6 +297,15 @@ sh_space_plan() {
         if [ -z "$sh_sp_first_working" ]; then
             sh_sp_first_working=$sh_sp_candidate
         fi
+        # The recorded root is sticky as soon as it is writable and runs a file.
+        # Free space does NOT unseat it: migrating an established root orphans
+        # every view, cache and launcher that already lives on it, which is a
+        # worse failure than a later install running out of room on the root the
+        # caller already has. A root that is gone or refuses exec falls through
+        # to the ranking, and --exec still moves it deliberately.
+        if [ -n "$sh_sp_recorded" ] && [ "$sh_sp_candidate" = "$sh_sp_recorded" ]; then
+            sh_sp_sticky=$sh_sp_candidate
+        fi
         if [ -z "$sh_sp_fake" ]; then
             sh_sp_free=$(sh_free_mb "$sh_sp_candidate")
             case "$sh_sp_free" in
@@ -276,6 +328,7 @@ sh_space_plan() {
             fi
         fi
     done
+
 
     # # NOTE: THE TWO ROOTS COLLAPSE ONLY WHEN NOTHING WAS ASKED FOR EXPLICITLY. An
     # operator who named SANDHOME_EXEC has said where executables must go, and
@@ -316,6 +369,8 @@ sh_space_plan() {
         fi
     elif [ "$SH_HOME_EXEC" = yes ]; then
         SH_EXEC=$SH_HOME
+    elif [ -n "$sh_sp_sticky" ]; then
+        SH_EXEC=$sh_sp_sticky
     elif [ -n "$sh_sp_first_roomy" ]; then
         SH_EXEC=$sh_sp_first_roomy
     elif [ -n "$sh_sp_first_working" ]; then
@@ -588,15 +643,58 @@ sh_space_need() {
     return 0
 }
 
+# sh_view_copy_kb SRC -> the KB that sh_promote_tree will actually COPY out of
+# SRC. It is the size the exec root must hold, and it is NOT the size of the
+# tree: shared objects (.so/.rlib/.a), data files and every symlink are
+# symlinked back to the home and cost the exec root nothing, and the largest
+# entries in a toolchain are exactly those (librustc_driver.so, libLLVM). A gate
+# that used `du -sk` over the whole tree therefore over-counted by hundreds of
+# megabytes and refused rust on a root the real view fits in. The walk mirrors
+# sh_promote_tree's copy rule and is a queue for the same reason (rule 5, no
+# recursion in POSIX sh).
+sh_view_copy_kb() {
+    sh_vck_src=$1
+    if [ ! -d "$sh_vck_src" ] || ! sh_have du; then
+        printf ''
+        return 0
+    fi
+    sh_vck_total=0
+    sh_vck_queue="${SH_HOME_TMP:-${TMPDIR:-/tmp}}/.viewcopy.$$"
+    printf '%s\n' "$sh_vck_src" > "$sh_vck_queue" 2>/dev/null || {
+        printf ''
+        return 0
+    }
+    while IFS= read -r sh_vck_d; do
+        [ -n "$sh_vck_d" ] || continue
+        for sh_vck_e in "$sh_vck_d"/* "$sh_vck_d"/.[!.]* "$sh_vck_d"/..?*; do
+            [ -e "$sh_vck_e" ] || [ -L "$sh_vck_e" ] || continue
+            if [ -d "$sh_vck_e" ] && [ ! -L "$sh_vck_e" ]; then
+                printf '%s\n' "$sh_vck_e" >> "$sh_vck_queue"
+                continue
+            fi
+            # A symlink is mirrored as a link, never copied.
+            [ -L "$sh_vck_e" ] && continue
+            sh_is_exec_file "$sh_vck_e" || continue
+            sh_vck_k=$(du -sk "$sh_vck_e" 2>/dev/null | { read -r sh_vck_kb _ || :; printf '%s' "$sh_vck_kb"; })
+            case "$sh_vck_k" in
+                ''|*[!0-9]*) continue ;;
+            esac
+            sh_vck_total=$((sh_vck_total + sh_vck_k))
+        done
+    done < "$sh_vck_queue"
+    rm -f "$sh_vck_queue" 2>/dev/null
+    printf '%s' "$sh_vck_total"
+}
+
 # sh_view_need SRC -> refuse before mirroring when the exec root plainly cannot
 # hold the view. Uses the free-space number the planner already measures and
-# the apparent size of SRC. Names the constraint rather than failing at ENOSPC
-# mid-copy (issue #33 constrains #29: a 172MB zig binary does not fit a 245MB
-# tmpfs that already holds views plus GOCACHE).
+# the COPY size of SRC (sh_view_copy_kb), not its whole-tree size, because only
+# regular executables are copied (issue #33 constrains #29: a 172MB zig binary
+# does not fit a 245MB tmpfs that already holds views plus GOCACHE).
 sh_view_need() {
     sh_vn_src=$1
     [ -d "$sh_vn_src" ] || return 0
-    sh_vn_need=$(sh_dir_size "$sh_vn_src" 2>/dev/null)
+    sh_vn_need=$(sh_view_copy_kb "$sh_vn_src" 2>/dev/null)
     case "$sh_vn_need" in
         ''|*[!0-9]*) return 0 ;;
     esac

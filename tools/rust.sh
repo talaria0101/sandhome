@@ -3,8 +3,33 @@
 TC_rust_DESC='Rust via rustup (rustc, cargo, rustup; minimal profile)'
 TC_rust_BINS='cargo/bin/rustup cargo/bin/cargo'
 
+# tc_rust_probe -> 0 when a WORKING rustc is already here, which is the whole
+# question. It used to be `sh_have rustc && rustc --version`, and that answers
+# yes for a copy that cannot build: some sealed sandboxes ship a multi-arch rust
+# as a shim that prints a version and refuses everything else. So the adopt path
+# was taken, `sandhome install rust` exited 0 having printed "a working copy is
+# already here; adopting it", `sandhome report` printed
+#   toolchain.rust=rustc 1.99.0 (proxy build 2026-01-01)
+# and the first build the consumer attempted died with "proxy rustc: refusing,
+# not a compiler" (issue #53). Nothing in the setup said the toolchain was a
+# placeholder, and there was no --force to skip the probe (that came with #45).
+#
+# The decision being made is "can this copy build", so it is answered by
+# building. tc_rust_behavioural compiles and runs one trivial binary, which is
+# the same measurement the noexec-sysroot repair already used, and it is
+# reported when it fails rather than falling through silently, because a
+# consumer whose rustc was rejected needs to know which one was thrown away.
+#
+# The cost is one compile of a four-line program, and it is only paid when a
+# rustc is present: with none on PATH there is nothing to probe.
 tc_rust_probe() {
-    sh_have rustc && rustc --version >/dev/null 2>&1
+    sh_have rustc || return 1
+    rustc --version >/dev/null 2>&1 || return 1
+    if tc_rust_behavioural >/dev/null 2>&1; then
+        return 0
+    fi
+    sh_warn "the rustc on PATH answers --version but does not compile here, so it is not a working copy; install a real toolchain instead of adopting it"
+    return 1
 }
 
 # tc_rust_behavioural -> 0 when a trivial native binary links and runs.

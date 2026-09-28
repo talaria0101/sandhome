@@ -582,6 +582,61 @@ if grep -q 'workdir.*noexec\|noexec.*workdir\|workdir=%s is noexec' "$ROOT/lib/r
 else
     t_ok 1 'doctor names a noexec workdir (#24)'
 fi
+# # STOP: THE NOEXEC NOTE NAMES THE TWO SHAPES THAT READ AS A BROKEN INSTALL.
+# "build output here will not run" does not cover a per-project venv, which
+# HALF works: `bin/python` is a symlink to an exec-capable system python so
+# `python -m` runs, while every console script's absolute shebang points into
+# the noexec tree and dies with "bad interpreter: Permission denied" (issue #42).
+# The same is true of node's node_modules/.bin. A consumer reading only the old
+# note concludes the install is broken, because nothing in the failure mentions
+# the mount. The note names the venv, the shebang, and the command that fixes
+# it, and so does the guide.
+if grep -q 'bad interpreter' "$ROOT/lib/report.sh" 2>/dev/null; then
+    t_ok 0 'the noexec note names the bad-interpreter case (#42)'
+else
+    t_ok 1 'the noexec note names the bad-interpreter case (#42)'
+fi
+if grep -q 'venvs' "$ROOT/lib/report.sh" 2>/dev/null; then
+    t_ok 0 'the noexec note names the exec-root venv as the fix (#42)'
+else
+    t_ok 1 'the noexec note names the exec-root venv as the fix (#42)'
+fi
+if grep -q 'bad interpreter' "$ROOT/docs/guide.md" 2>/dev/null; then
+    t_ok 0 'the guide has a row for a half-working venv (#42)'
+else
+    t_ok 1 'the guide has a row for a half-working venv (#42)'
+fi
+# # STOP: THE TOOLSET TABLE IS CHECKED AGAINST THE CODE, NOT TRUSTED. A
+# toolset grew three toolchains in one change and the guide still listed only
+# the names, so a consumer choosing `developer` had no way to learn that the
+# compilers are in `languages`. A table nobody compares to the source is a
+# table that rots, and it is the kind of drift tests/docs.sh exists to stop.
+ts_body=$(sed -n '/^sh_toolset_names()/,/^}/p' "$ROOT/bootstrap.sh" 2>/dev/null)
+ts_bad=''
+for ts_name in minimal cli developer languages agent; do
+    # The names are stored as printf 'jq ripgrep fd\n', so the trailing \n is
+    # a literal backslash-n inside the quoted string: it is a SEPARATOR, and
+    # `tr -d '\\'` would eat the n off the end of the last name instead.
+    ts_line=$(printf '%s\n' "$ts_body" | sed -n "s/^ *$ts_name) *printf '\([^']*\)'.*/\1/p" |
+              tr '\\' ' ')
+    if [ -z "$ts_line" ]; then
+        ts_bad="$ts_bad $ts_name:missing"
+        continue
+    fi
+    for ts_tool in $ts_line; do
+        if ! grep -q "\b$ts_tool\b" "$ROOT/docs/guide.md" 2>/dev/null; then
+            ts_bad="$ts_bad $ts_name:$ts_tool"
+        fi
+    done
+done
+t_is "$ts_bad" '' 'every toolchain in every toolset is named in the guide'
+# The reverse: clang is deliberately in no toolset, and the guide must say so
+# rather than let a consumer assume `languages` includes it.
+if grep -q 'clang' "$ts_body" 2>/dev/null; then
+    t_ok 1 'clang stays out of every toolset'
+else
+    t_ok 0 'clang stays out of every toolset'
+fi
 # C: capacity is gated before writing and gc reclaims caches.
 if grep -q 'sh_view_need' "$ROOT/lib/space.sh" 2>/dev/null; then
     t_ok 0 'the exec view is size-gated before mirroring (#33)'

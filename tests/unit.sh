@@ -203,6 +203,100 @@ nidx_file="$tmp/index.json"
 printf '[\n{"version":"v26.10.0","date":"2026-09-21"},\n{"version":"v24.0.0","date":"2025-01-01"}\n]\n' > "$nidx_file"
 t_is "$(SANDHOME_NODE_INDEX_URL="file://$nidx_file" tc_node_latest_tag)" 'v26.10.0' \
     'node resolves the newest version, which is not on the first line'
+
+# # STOP: THE ZIG PARSER MUST SKIP `master` AND TAKE THE URL FROM THE INDEX. The
+# index is keyed master-first, its version carries `-dev`, and the tarball moved
+# from `zig-linux-x86_64-<v>` to `zig-x86_64-linux-<v>`; the old code built the
+# old name from a dev version and fetched a 404.
+. "$ROOT/tools/zig.sh"
+zigidx="$tmp/zig-index.json"
+cat > "$zigidx" <<'JSON'
+{
+  "master": {
+    "version": "0.17.0-dev.2320+1e770dbef",
+    "x86_64-linux": {
+      "tarball": "https://ziglang.org/builds/zig-x86_64-linux-0.17.0-dev.2320+1e770dbef.tar.xz",
+      "shasum": "4668738082f1f085ad072eb3306b7bf48d6350c95b99ae20ace24c1f16747490",
+      "size": "57275800"
+    }
+  },
+  "0.16.0": {
+    "version": "0.16.0",
+    "x86_64-linux": {
+      "tarball": "https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz",
+      "shasum": "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00",
+      "size": "55478392"
+    }
+  }
+}
+JSON
+t_is "$(SANDHOME_ZIG_INDEX_URL="file://$zigidx" tc_zig_resolve x86_64-linux)" \
+    '0.16.0 https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz 70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00' \
+    'zig skips the master dev build and reads the tarball URL from the index'
+t_is "$(SANDHOME_ZIG_INDEX_URL="file://$zigidx" tc_zig_resolve x86_64-linux 0.16.0)" \
+    '0.16.0 https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz 70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00' \
+    'zig resolves an explicitly requested version from the index'
+
+# The new modules' download URLs, under stubs, so the arch/asset naming is
+# measured without a download. A wrong asset name is a 404 that reads as a
+# mirror outage, which is why it is worth a clause.
+. "$ROOT/tools/clang.sh"
+. "$ROOT/tools/deno.sh"
+. "$ROOT/tools/bun.sh"
+. "$ROOT/tools/mold.sh"
+newmod_url() {
+    nm_name=$1; nm_kernel=$2; nm_arch=$3; nm_libc=$4
+    (
+        SH_HOME_TOOLCHAINS="$tmp/tc"
+        SH_HOME_TMP="$tmp"
+        SH_KERNEL=$nm_kernel
+        SH_ARCH=$nm_arch
+        SH_LIBC=$nm_libc
+        export SH_HOME_TOOLCHAINS SH_HOME_TMP SH_KERNEL SH_ARCH SH_LIBC
+        sh_space_need() { return 0; }
+        sh_fetch() { return 1; }
+        sh_github_latest_tag() {
+            case "$1" in
+                llvm/*)     printf 'llvmorg-23.1.2' ;;
+                denoland/*) printf 'v2.9.7' ;;
+                oven-sh/*)  printf 'bun-v1.4.2' ;;
+                rui314/*)   printf 'v2.42.1' ;;
+            esac
+        }
+        sh_fetch_unpack() {
+            case "$nm_name" in
+                deno) mkdir -p "$2" && : > "$2/deno" ;;
+                bun)  mkdir -p "$2" && : > "$2/bun" ;;
+                *)    mkdir -p "$2/bin" && : > "$2/bin/mold" && : > "$2/bin/clang" ;;
+            esac
+            printf '%s' "$1"
+        }
+        case "$nm_name" in
+            clang) tc_clang_install 2>/dev/null ;;
+            deno)  tc_deno_install 2>/dev/null ;;
+            bun)   tc_bun_install 2>/dev/null ;;
+            mold)  tc_mold_install 2>/dev/null ;;
+        esac
+    )
+}
+t_is "$(newmod_url clang Linux x86_64 gnu)" \
+    'https://github.com/llvm/llvm-project/releases/download/llvmorg-23.1.2/LLVM-23.1.2-Linux-X64.tar.xz' \
+    'clang builds the x86_64 LLVM asset URL'
+t_is "$(newmod_url clang Linux aarch64 gnu)" \
+    'https://github.com/llvm/llvm-project/releases/download/llvmorg-23.1.2/LLVM-23.1.2-Linux-ARM64.tar.xz' \
+    'clang builds the aarch64 LLVM asset URL'
+t_is "$(newmod_url deno Linux x86_64 gnu)" \
+    'https://github.com/denoland/deno/releases/download/v2.9.7/deno-x86_64-unknown-linux-gnu.zip' \
+    'deno builds the x86_64 zip URL'
+t_is "$(newmod_url bun Linux x86_64 gnu)" \
+    'https://github.com/oven-sh/bun/releases/download/bun-v1.4.2/bun-linux-x64.zip' \
+    'bun builds the gnu zip URL'
+t_is "$(newmod_url bun Linux x86_64 musl)" \
+    'https://github.com/oven-sh/bun/releases/download/bun-v1.4.2/bun-linux-x64-musl.zip' \
+    'bun builds the musl zip URL'
+t_is "$(newmod_url mold Linux x86_64 gnu)" \
+    'https://github.com/rui314/mold/releases/download/v2.42.1/mold-2.42.1-x86_64-linux.tar.gz' \
+    'mold builds the x86_64 tarball URL'
 # STOP: THE DIGEST IS LISTED IN dl/?mode=json AND NOT AT <file>.sha256, which is an
 # HTML page. The source tarball's entry must not answer for the archive's.
 gojson_file="$tmp/dl.json"
@@ -339,8 +433,16 @@ t_is "$(SANDHOME_SHA256_JQ_LINUX_ARM64=arm64d sh_pin_for 'https://x/jq-linux-arm
 # version with them reads the wrong variable for a differently-named asset.
 t_is "$(SANDHOME_SHA256_JQ_LINUX_AMD64=amd64d sh_pin_for 'https://x/jq-linux-i386' jq)" '' \
     'an amd64 asset pin does not answer for the i386 download' 
-t_is "$(sh_pin_names | tr -s ' \n' ' ')" ' fd go jq node python ripgrep rust zig ' \
+t_is "$(sh_pin_names | tr -s ' \n' ' ')" ' fd go jq node python ripgrep rust zig mold clang deno bun ' \
     'the pin-name list is the shape the clause above assumes'
+t_is "$(SANDHOME_SHA256_MOLD=moldd sh_pin_for 'https://x/mold-2.4-x86_64-linux.tar.gz' mold)" 'moldd' \
+    'a mold pin answers for the mold tarball'
+t_is "$(SANDHOME_SHA256_CLANG=clangd sh_pin_for 'https://x/LLVM-23.1.2-Linux-X64.tar.xz' clang)" 'clangd' \
+    'a clang pin answers for the LLVM tarball'
+t_is "$(SANDHOME_SHA256_DENO=denod sh_pin_for 'https://x/deno-x86_64-unknown-linux-gnu.zip' deno)" 'denod' \
+    'a deno pin answers for the deno zip'
+t_is "$(SANDHOME_SHA256_BUN=bund sh_pin_for 'https://x/bun-linux-x64.zip' bun)" 'bund' \
+    'a bun pin answers for the bun zip'
 
 # EVERY MODULE HAS A PIN NAME, so a new toolchain cannot be added without one.
 missing_pins=''
@@ -362,16 +464,22 @@ t_is "$missing_pins" '' 'every toolchain module has a SANDHOME_SHA256_<name> pin
 # It is a dash RUNTIME behaviour: shellcheck does not flag it, so the guard has
 # to be an executed clause. The whole of sh_fetch_verified is driven below
 # through a local file under `set -u`, which is the only way to see this.
+#
+# The library is sourced by its $ROOT path, not by `./lib/...`, because
+# `sandhome test` runs this file with the repository as the working directory
+# and not as the test's own. Measured: from the repo root the clause passed and
+# from anywhere else it failed with ".: cannot open ./lib/common.sh", so the
+# suite could only be run one way and `sandhome test` was red by default.
 printf 'payload\n' > "$tmp/pin-target"
 REAL_SHA=$(sha256sum "$tmp/pin-target" 2>/dev/null | cut -d' ' -f1)
 if [ -n "$REAL_SHA" ]; then
-    if ( . ./lib/common.sh; . ./lib/fetch.sh
+    if ( set -u; . "$ROOT/lib/common.sh"; . "$ROOT/lib/fetch.sh"
           sh_fetch_verified "file://$tmp/pin-target" "$tmp/pin-dest" "$REAL_SHA" ) 2>"$tmp/fv-err"; then
         t_ok 0 'sh_fetch_verified returns 0 when the digest matches'
     else
         t_ok 1 "sh_fetch_verified returns 0 when the digest matches ($(cat "$tmp/fv-err"))"
     fi
-    if ( . ./lib/common.sh; . ./lib/fetch.sh
+    if ( set -u; . "$ROOT/lib/common.sh"; . "$ROOT/lib/fetch.sh"
           sh_fetch_verified "file://$tmp/pin-target" "$tmp/pin-dest2" \
           0000000000000000000000000000000000000000000000000000000000000000 ) 2>/dev/null; then
         t_ok 1 'a mismatched digest is refused'
@@ -1159,6 +1267,39 @@ sh_repo_persist >/dev/null 2>&1
 t_is "$SH_REPO_DIR" "$ROOT" 'a clone keeps pointing at the clone (#20)'
 t_ok "$([ ! -d "$rp_tmp/home2/repo" ]; echo $?)" 'a clone writes no durable copy (#20)'
 rm -rf "$rp_tmp" 2>/dev/null
+
+# # STOP: BOTH CALL FORMS OF sh_append_once WRITE THE LINE THEY WERE GIVEN.
+# The two-argument form is sh_append_once FILE LINE and the three-argument form
+# is sh_append_once FILE PREFIX LINE. The three-argument one was added for the
+# exec-root move, and choosing between them by comparing $2 with $3 is wrong:
+# with two arguments $3 is empty, so "$2" != "$3" is TRUE and the branch is
+# entered, the shift is skipped, and the line is read out of $1 - which is the
+# FILE. Every two-argument call then wrote an empty line and reported success.
+#
+# The whole suite stayed green through that, because no test exercised the
+# two-argument form: it is reached only by lib/env.sh writing the profile line,
+# and that file is read by a login shell nobody runs during a test. These
+# clauses are that test.
+sa_a=$tmp/append2.$$; rm -f "$sa_a"
+sh_append_once "$sa_a" 'first line'
+sh_append_once "$sa_a" 'first line'
+sh_append_once "$sa_a" 'second line'
+t_contains "$(cat "$sa_a")" 'first line' 'sh_append_once FILE LINE writes the line it was given'
+t_is "$(grep -c 'Added by' "$sa_a")" 2 'the two-argument form appends once per distinct line'
+# The marker is written after a blank line, so the line under it is the second
+# physical line, not the first.
+t_is "$(sed -n 2p "$sa_a")" '# Added by sandhome.' 'the marker comment precedes the line'
+t_is "$(sed -n 3p "$sa_a")" 'first line' 'the first line follows its marker comment'
+
+sa_b=$tmp/append3.$$; rm -f "$sa_b"
+sh_append_once "$sa_b" 'export PATH="' 'export PATH="/one/bin:$PATH"'
+sh_append_once "$sa_b" 'export PATH="' 'export PATH="/two/bin:$PATH"'
+# ONE block, because replacing is the whole point: a second root must not leave
+# the first one on the file, where a prepended PATH would put it first again.
+t_is "$(grep -c 'Added by' "$sa_b")" 1 'the three-argument form keeps one block per prefix'
+t_contains "$(cat "$sa_b")" '/two/bin' 'the three-argument form replaces the line under its prefix'
+t_ok "$(grep -q '/one/bin' "$sa_b" && echo 1 || echo 0)" 'the superseded line is gone'
+rm -f "$sa_a" "$sa_b" 2>/dev/null
 
 rm -rf "$tmp"
 t_end

@@ -1,6 +1,6 @@
 #!/bin/sh
 # sandhome - the one command. POSIX sh; sources the library from the checkout it
-# lives in, or from SANDHOME_REPO, so a copy installed under a prefix works.
+# lives in, or from SANDHOME_REPO_DIR, so a copy installed under a prefix works.
 set -u
 
 SH_SELF=sandhome
@@ -20,12 +20,73 @@ elif [ -n "${SH_REPO_DIR:-}" ]; then
 else
     case "$0" in
         */*) sh_repo=$(CDPATH='' cd -- "${0%/*}/.." && pwd) ;;
-        *)   printf 'sandhome: cannot find the sandhome library; run it by path or set SANDHOME_REPO\n' >&2
-             exit 2 ;;
+        *)   sh_repo='' ;;
     esac
+    # # STOP: A BARE SHELL FINDS THE CHECKOUT FROM THE ENV FILE, WHICH IS WHERE
+    # IT WAS ALREADY WRITTEN. ROUTE.md step 4 offers `eval "$(sandhome env)"`
+    # for a shell where sourcing is not possible, and it is the form a tool
+    # harness uses: no .profile, no .bashrc, no variables set. The copy PATH
+    # names lives on the exec root, where "the parent of $0" is the exec root
+    # and there is no lib/ under it, so with no SANDHOME_REPO_DIR in the
+    # environment the command could not find its own library and printed
+    #   sandhome: no library under /tmp; set SANDHOME_REPO
+    # naming a variable documented as the owner/name slug to fetch from a pipe,
+    # not a path, so following that error could not work either. The eval was
+    # impossible exactly where the docs recommend it (issue #40).
+    #
+    # The home is not a candidate for the library itself: a network-only install
+    # leaves no lib/ under the home, because the library only ever lives in the
+    # checkout. What the home does hold is env.sh, and env.sh carries
+    # SANDHOME_REPO_DIR. So the same three roots the bootstrap and env.sh
+    # resolve are searched for that file, and the single value it records is
+    # read the way the shell's own read reads it - the library may not use grep.
+    if [ ! -n "$sh_repo" ] || [ ! -r "$sh_repo/lib/common.sh" ]; then
+        for sh_repo_home in \
+            "${SANDHOME_HOME:-}" \
+            "${XDG_DATA_HOME:-}/sandhome" \
+            "$HOME/.local/share/sandhome" \
+            "$HOME/.sandhome"
+        do
+            [ -n "$sh_repo_home" ] || continue
+            [ -r "$sh_repo_home/env.sh" ] || continue
+            while IFS= read -r sh_repo_l; do
+                # The line is `export SANDHOME_REPO_DIR=${SANDHOME_REPO_DIR:-'PATH'}`
+                # - the leading word, the parameter expansion, and a quoted
+                # default all have to come off before what is left is a path.
+                # The second pattern is spelled with a leading `*` on purpose.
+                # docs/generate-reference.sh takes the first line matching
+                # "^ *SANDHOME_REPO_DIR=" as that variable's default value, so a
+                # case arm written the obvious way - indented, then the bare
+                # name, then `=*` - is read as an assignment and the generated
+                # reference reports the default as `*)`. It failed here exactly
+                # that way, and a reference that prints `*)` is a document
+                # nobody can trust.
+                case "$sh_repo_l" in
+                    export\ SANDHOME_REPO_DIR=*) sh_repo_l=${sh_repo_l#export } ;;
+                esac
+                case "$sh_repo_l" in
+                    *SANDHOME_REPO_DIR=*)
+                        sh_repo=${sh_repo_l#SANDHOME_REPO_DIR=}
+                        sh_repo=${sh_repo#\$\{SANDHOME_REPO_DIR:-}
+                        sh_repo=${sh_repo%\}}
+                        sh_repo=${sh_repo#\'}
+                        sh_repo=${sh_repo%\'}
+                        sh_repo=${sh_repo#\"}
+                        sh_repo=${sh_repo%\"}
+                        break ;;
+                esac
+            done < "$sh_repo_home/env.sh"
+            [ -r "$sh_repo/lib/common.sh" ] && break
+            sh_repo=''
+        done
+    fi
+    if [ -z "$sh_repo" ] || [ ! -r "$sh_repo/lib/common.sh" ]; then
+        printf 'sandhome: cannot find the sandhome library; set SANDHOME_REPO_DIR to the checkout, or run the copy in the checkout\n' >&2
+        exit 2
+    fi
 fi
 if [ ! -r "$sh_repo/lib/common.sh" ]; then
-    printf 'sandhome: no library under %s; set SANDHOME_REPO\n' "$sh_repo" >&2
+    printf 'sandhome: no library under %s; set SANDHOME_REPO_DIR to a checkout containing lib/common.sh\n' "$sh_repo" >&2
     exit 2
 fi
 
@@ -83,12 +144,17 @@ usage: sandhome COMMAND [args]
   install --force NAME   install NAME even when a working copy is on PATH
   install rust --target T   add rust cross targets (comma list, repeatable)
   ensure NAME...         alias for install
+  repair [NAME...]       rebuild the exec view and launchers, downloading
+                         nothing. The fix for "Permission denied" on a tool
+                         that is already installed or adopted. No names means
+                         every toolchain sandhome knows.
   shims [build]          build the LD_PRELOAD shims this machine needs
   test                   run this checkout's whole test suite
   selftest               the checks that need this machine and no network
   selftest shims         build and exercise the LD_PRELOAD shims
   selftest exec          the noexec-home end-to-end: install, promote, run
-  shell [args]           run errandsh, the pty-less line discipline
+  shell [args]           run errandsh, the line discipline with a userspace pty
+  pty CMD...             run CMD with a userspace pty (no /dev/ptmx needed)
   exec CMD...            run CMD with the sandhome environment loaded
   report [--json]        the full report
   gc [DAYS] [--dry-run]   remove staging older than DAYS (default 7)
@@ -98,7 +164,9 @@ usage: sandhome COMMAND [args]
 Environment:
   SANDHOME_HOME   the persistent data root (default $XDG_DATA_HOME/sandhome)
   SANDHOME_EXEC   the exec-capable root; detected when unset
-  SANDHOME_REPO   the checkout that holds lib/, tools/ and shell/
+  SANDHOME_REPO   owner/name to fetch when run from a pipe (default
+                  talaria0101/sandhome). The checkout that holds lib/ is named
+                  by SANDHOME_REPO_DIR, which env.sh sets.
   SANDHOME_SHIMS  set to 1 to put the shims in LD_PRELOAD
   SANDHOME_PASSWD_USERS   extra names for the synthetic passwd database
   SANDHOME_SHA256 a default digest for downloads with no pin of their own.
@@ -250,6 +318,60 @@ cmd_install() {
     sh_env_load
     return 0
 }
+# # STOP: REPAIR REBUILDS THE VIEW AND DOWNLOADS NOTHING. Every consumer-facing
+# diagnostic procedure routed step 2 through `sandhome install <name>`, and on a
+# host with an adopted toolchain that command is the cause of the defect rather
+# than the cure for it: it re-runs the adopt path, and 8 rounds of the documented
+# procedure left jq, rg or fd broken in 8 of them (issues #49, #43). The repair a
+# consumer with "Permission denied" needs is a relink of what is already on the
+# machine, and `install` cannot be asked for that without also being allowed to
+# download.
+#
+# So this is the command the docs name, and it does exactly three things: relink
+# every toolchain already in the home or already on PATH into the exec view,
+# put sandhome and errandsh back on the root, and re-run the shims. It adopts
+# nothing, downloads nothing, and so cannot turn a working install into a broken
+# one. With no arguments it covers every known toolchain; with names it covers
+# only those, which is what a consumer who knows which tool is broken wants.
+cmd_repair() {
+    sh_env_load
+    sh_rp_names=''
+    for sh_rp_arg in "$@"; do
+        if ! sh_toolchain_known "$sh_rp_arg"; then
+            sh_fail "unknown toolchain $sh_rp_arg; run 'sandhome toolchains' for the list"
+        fi
+        # `sh_in_list` splits on commas and pipes, not on spaces, so a
+        # space-separated accumulator would ask it whether ' jq' is in the empty
+        # list, be told no, and still be told yes by the first name added. The
+        # accumulator is a comma list here for exactly that reason.
+        sh_in_list "$sh_rp_arg" "$sh_rp_names" || sh_rp_names="$sh_rp_names,$sh_rp_arg"
+    done
+    if [ -z "$(sh_trim "$sh_rp_names")" ]; then
+        sh_rp_names=$(sh_toolchain_available)
+    fi
+    for sh_rp_name in $(sh_split_on ',' "$sh_rp_names"); do
+        sh_toolchain_known "$sh_rp_name" || continue
+        # The module has to be sourced before its TC_<name>_BINS is readable.
+        # install gets this for free because sh_toolchain_ensure loads it; a
+        # command that goes straight to the promote step has to ask, and asking
+        # is what sh_toolchain_load is for.
+        sh_toolchain_load "$sh_rp_name" || continue
+        eval "sh_rp_bins=\${TC_${sh_rp_name}_BINS:-}"
+        [ -n "$sh_rp_bins" ] || continue
+        # shellcheck disable=SC2086
+        if sh_promote_toolchain "$sh_rp_name" $sh_rp_bins; then
+            sh_say "repaired the exec view for $sh_rp_name"
+        else
+            sh_fail "could not rebuild the exec view for $sh_rp_name"
+        fi
+    done
+    sh_exec_install_launchers
+    sh_shim_build_all "$SH_REPO_DIR/shims"
+    sh_shim_write_passwd
+    sh_shim_report
+    sh_env_write
+    return 0
+}
 cmd_shims() {
     if [ "${1:-build}" = build ]; then
         sh_shim_build_all "$SH_REPO_DIR/shims"
@@ -266,6 +388,19 @@ cmd_shell() {
         exec sh "$SH_REPO_DIR/shell/errandsh" "$@"
     fi
     sh_die 'no errandsh found'
+}
+# pty CMD... -> run CMD with a userspace pty, where the kernel has none. The
+# wrapper exports the fakepty interposer and execs, so a subshell CMD spawns
+# keeps the terminal. This is the same path errandsh uses for a full-screen
+# program, exposed for a caller that is not in an errandsh session.
+cmd_pty() {
+    if [ "$#" -eq 0 ]; then
+        sh_die 'pty needs a command'
+    fi
+    if [ ! -r "$SH_REPO_DIR/shell/faketty" ]; then
+        sh_die "no faketty wrapper at $SH_REPO_DIR/shell/faketty"
+    fi
+    exec sh "$SH_REPO_DIR/shell/faketty" "$@"
 }
 cmd_exec() {
     if [ "$#" -eq 0 ]; then
@@ -378,6 +513,14 @@ sh_cmd_needs_roots() {
         fi
         sh_die 'no writable mount here both allows exec and can be written; set SANDHOME_EXEC to one'
     fi
+    # A create plan may have moved the exec root; make sure the command that was
+    # just invoked is on the root it chose (issue #41). `repair` does the same
+    # for the same reason: it is the command a consumer runs when the exec view
+    # has gone, and the first thing it must put back is the command they are
+    # running it with.
+    case "${1:-}" in
+        install|repair) sh_exec_install_launchers ;;
+    esac
     return 0
 }
 
@@ -430,8 +573,10 @@ case "${1:-help}" in
     space)       shift; cmd_space "$@" ;;
     toolchains)  shift; cmd_toolchains "$@" ;;
     install|ensure) sh_cmd_needs_roots install; shift; cmd_install "$@" ;;
+    repair)         sh_cmd_needs_roots repair; shift; cmd_repair "$@" ;;
     shims)       sh_cmd_needs_roots shims; shift; cmd_shims "$@" ;;
     shell)       shift; cmd_shell "$@" ;;
+    pty)         shift; cmd_pty "$@" ;;
     exec)        shift; cmd_exec "$@" ;;
     report)      shift; cmd_report "$@" ;;
     gc)          sh_cmd_needs_roots gc; shift; cmd_gc "$@" ;;

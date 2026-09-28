@@ -140,9 +140,23 @@ sh_doctor() {
     # fails at run time with Permission denied, which reads as an install bug.
     # This is informational, never a failure: the fix is to build under
     # SANDHOME_EXEC, not to move the project.
+    #
+    # The note names the two shapes that read as a BROKEN INSTALL rather than a
+    # noexec mount, because neither is obvious and both were measured (issue #42).
+    # A per-project venv half-works: bin/python is a symlink to an exec-capable
+    # system python, so `.venv/bin/python -m x` runs, while every console script
+    # has an absolute shebang into the noexec tree and dies with
+    #   .venv/bin/cowsay: .venv/bin/python: bad interpreter: Permission denied
+    # The same for node: `npm install` exits 0, and ./node_modules/.bin/CLI dies
+    # the same way while `node node_modules/CLI/index.js` works. The remedy is
+    # the same in both cases and is the exec root, so it is named once.
     sh_doc_cwd=${PWD:-.}
     if ! sh_exec_probe "$sh_doc_cwd" 2>/dev/null; then
         printf 'note   workdir=%s is noexec; build and run output under %s\n' "$sh_doc_cwd" "${SH_EXEC:-.}"
+        printf 'note   a .venv or node_modules here half-works: python -m runs, but every\n'
+        printf 'note     console script has a shebang into this tree and exits "bad\n'
+        printf 'note     interpreter: Permission denied". Put the venv on the exec root:\n'
+        printf 'note     uv venv %s/venvs/NAME && uv pip install --python %s/venvs/NAME/bin/python PKG\n' "${SH_EXEC:-.}" "${SH_EXEC:-.}"
     fi
     # A cleared tmpfs exec root (container restart) leaves a valid env.sh with
     # no sandhome on it. Name the state rather than failing silently.

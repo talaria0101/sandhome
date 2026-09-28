@@ -81,6 +81,87 @@ t_contains "$out" 'name=(none)' 'without fakepwd the user is absent'
 out=$( LD_PRELOAD="$(sh_shims_dir)/fakepty.so" "$tmp/probe" < /dev/null 2>/dev/null )
 t_contains "$out" 'isatty0=1' 'fakepty makes fds 0-2 look like a terminal'
 
+# # STOP: isatty() ALONE IS NOT A TERMINAL. A full-screen program also asks for
+# a termios and a window size, and opens /dev/tty when it wants keys. The probe
+# below asks for all of them, and then makes fd 1 a NEW pipe to prove the
+# SCOPED session does not report that pipe as a terminal - the defect the
+# unconditional fd 0-2 shim has, which put ANSI codes into `jq | cat`.
+cat > "$tmp/ptyprobe.c" <<'EOF'
+#include <stdio.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <termios.h>
+#include <sys/ioctl.h>
+int main(void){
+    struct termios t; struct winsize w; int p[2], save, r;
+    printf("isatty0=%d isatty1=%d\n", isatty(0), isatty(1));
+    printf("tcgetattr0=%d\n", tcgetattr(0,&t));
+    ioctl(1,TIOCGWINSZ,&w); printf("win=%dx%d\n", w.ws_col, w.ws_row);
+    printf("devtty=%d\n", open("/dev/tty",O_RDONLY)>=0);
+    save=dup(1); pipe(p); dup2(p[1],1); r=isatty(1); dup2(save,1); close(save);
+    printf("piped_isatty1=%d\n", r);
+    fflush(stdout);
+    return 0;
+}
+EOF
+cc -O2 -o "$tmp/ptyprobe" "$tmp/ptyprobe.c" 2>/dev/null || gcc -O2 -o "$tmp/ptyprobe" "$tmp/ptyprobe.c" 2>/dev/null
+t_ok "$([ -x "$tmp/ptyprobe" ]; echo $?)" 'the full-terminal probe compiles'
+
+out=$( LD_PRELOAD="$(sh_shims_dir)/fakepty.so" "$tmp/ptyprobe" < /dev/null 2>/dev/null )
+t_contains "$out" 'tcgetattr0=0' 'fakepty answers tcgetattr on a faked fd'
+t_contains "$out" 'win=80x24' 'fakepty reports a default window size'
+t_contains "$out" 'devtty=1' 'fakepty maps /dev/tty onto the session descriptors'
+t_contains "$out" 'piped_isatty1=1' 'without a session id a new pipe on fd 1 is still faked (the old behaviour)'
+
+# A size the caller chose wins over the default.
+out=$( SANDHOME_FAKEPTY_SIZE=100x40 LD_PRELOAD="$(sh_shims_dir)/fakepty.so" "$tmp/ptyprobe" < /dev/null 2>/dev/null )
+t_contains "$out" 'win=100x40' 'SANDHOME_FAKEPTY_SIZE sets the window size'
+
+# SANDHOME_FAKEPTY_ID scopes the faking to the named descriptors, and /proc is
+# read through /proc/$$/fd because readlink itself is a child whose fd 1 is the
+# command-substitution pipe. With the id set to the session's own fds the probe
+# sees a terminal, and the pipe it makes on fd 1 is NOT one.
+scoped=$(sh -c '
+    id0=$(readlink /proc/$$/fd/0 2>/dev/null || true)
+    id1=$(readlink /proc/$$/fd/1 2>/dev/null || true)
+    SANDHOME_FAKEPTY_ID="$id0 $id1" LD_PRELOAD="$1" "$2"
+' sh "$(sh_shims_dir)/fakepty.so" "$tmp/ptyprobe" < /dev/null 2>/dev/null)
+t_contains "$scoped" 'isatty0=1' 'a scoped session still reports its own descriptors as a terminal'
+t_contains "$scoped" 'piped_isatty1=0' 'a scoped session leaves a pipe opened later as a pipe (#jq)'
+
+# An id that matches nothing is not a terminal, so an unrelated process cannot
+# inherit the faking by accident.
+unscoped=$(sh -c 'SANDHOME_FAKEPTY_ID="pipe:[99999999]" LD_PRELOAD="$1" "$2"' \
+    sh "$(sh_shims_dir)/fakepty.so" "$tmp/ptyprobe" < /dev/null 2>/dev/null)
+t_contains "$unscoped" 'isatty0=0' 'a session id that matches nothing fakes nothing'
+
+# # STOP: ONLCR IS EMULATED, BECAUSE A PIPE DOES NOT DO IT. A program told
+# OPOST|ONLCR writes a bare \n and expects the terminal to return the carriage;
+# over a pipe that draws a staircase. Byte count is the assertion: A\nB is 3
+# bytes, A\r\nB is 4, and the switch turns it off.
+cat > "$tmp/crlfprobe.c" <<'EOF'
+#include <unistd.h>
+int main(void){ return write(1, "A\nB", 3) < 0; }
+EOF
+cc -O2 -o "$tmp/crlfprobe" "$tmp/crlfprobe.c" 2>/dev/null || gcc -O2 -o "$tmp/crlfprobe" "$tmp/crlfprobe.c" 2>/dev/null
+crlf_on=$(LD_PRELOAD="$(sh_shims_dir)/fakepty.so" "$tmp/crlfprobe" < /dev/null 2>/dev/null | wc -c | tr -d ' ')
+t_is "$crlf_on" '4' 'the shim turns a bare newline into CRLF like a terminal'
+crlf_off=$(SANDHOME_FAKEPTY_CRLF=0 LD_PRELOAD="$(sh_shims_dir)/fakepty.so" "$tmp/crlfprobe" < /dev/null 2>/dev/null | wc -c | tr -d ' ')
+t_is "$crlf_off" '3' 'SANDHOME_FAKEPTY_CRLF=0 passes output through byte for byte'
+
+# # STOP: THE WRAPPER IS THE CALLER-FACING HALF, AND IT MUST SURVIVE A
+# SUBSHELL. shell/faketty exports the interposer and execs, so a shell the
+# command spawns inherits a terminal. The clause runs a child shell from inside
+# faketty and asks BOTH whether the preload crossed and whether the child sees a
+# tty; a wrapper that only set the variable in its own process would pass the
+# first and fail the second.
+faketty_out=$(SANDHOME_FAKEPTY="$(sh_shims_dir)/fakepty.so" \
+    sh "$ROOT/shell/faketty" sh -c 'printf "CHILD-LD=%s\n" "$LD_PRELOAD"; if [ -t 0 ]; then echo CHILD-TTY; fi' \
+    < /dev/null 2>/dev/null)
+t_contains "$faketty_out" 'fakepty.so' 'faketty exports the interposer to the command'
+t_contains "$faketty_out" 'CHILD-TTY' 'a subshell faketty starts keeps the terminal'
+t_ok "$([ -x "$ROOT/shell/faketty" ] || [ -r "$ROOT/shell/faketty" ]; echo $?)" 'faketty is in the tree'
+
 # fakepwd alone, with the synthetic database it is pointed at.
 {
     printf 'sandhome-test:x:4242:4242:test:/tmp:/bin/sh\n'

@@ -368,6 +368,18 @@ sh_total_mb() {
     }
 }
 
+# sh_file_bytes PATH -> the size of PATH in bytes, or nothing. `wc -c` reads the
+# file rather than stat-ing it, but it is the one spelling that answers under a
+# BusyBox userland with no `stat`; the size of a fetch part is also small enough
+# that reading it is not a cost, and the streaming paths never call this on the
+# whole archive.
+sh_file_bytes() {
+    wc -c < "$1" 2>/dev/null | {
+        read -r sh_fb_n _ || :
+        printf '%s' "$sh_fb_n"
+    }
+}
+
 # sh_json_escape STRING -> STRING safe inside a JSON string. Only the five
 # mandatory escapes and control characters are handled; sandhome only ever puts
 # identifiers, paths and counts through here.
@@ -410,13 +422,123 @@ sh_json_escape() {
 # line unless it is already there" is how the two drift, and the second copy is
 # always the one that forgets the marker or compares a prefix. It CREATES the
 # file, so a caller that must not bring a file into being tests for it first.
+# sh_append_once FILE LINE -> append LINE with a marker comment unless a
+# byte-identical line is already there.
 #
-# SH_ADDED is 1 when this call wrote the line, 0 when it was already present.
+# sh_append_once FILE PREFIX LINE -> the same, but a line whose text after
+# PREFIX is already present is REPLACED rather than kept. That is what a
+# changing value needs: sh_append_once only de-duplicates an identical line, and
+# a different exec root is a different line, so moving the root left every
+# previous block in place.
+#
+#   # Added by bootstrap.
+#   export PATH="/dev/shm/bin:$PATH"
+#   # Added by bootstrap.
+#   if [ -r '.../profile.sh' ]; then . '.../profile.sh'; fi
+#   # Added by bootstrap.
+#   export PATH="/tmp/bin:$PATH"
+#
+# Three blocks, of which the first names an exec root nothing maintains any
+# more. PATH is prepended, so the STALE root wins, and the superseded root keeps
+# a bin/ and views/ that nothing names or removes (issue #41). The fix is to
+# make the line's shape the identity rather than its text: one export-PATH
+# block, holding the root in force now, however many times the root has moved.
 sh_append_once() {
     sh_ao_file=$1
-    sh_ao_line=$2
+    sh_ao_prefix=''
+    # The three-argument form is chosen by the ARGUMENT COUNT, not by comparing
+    # $2 with $3. Comparing them looks equivalent and is not: called with two
+    # arguments, $3 is empty, so "$2" != "$3" is TRUE, and a check written that
+    # way either shifts when it should not or - as it did here - skips the shift
+    # and then reads the line out of $1, which is the file name. Every two-arg
+    # call silently wrote an empty line. `[ $# -ge 3 ]` is the whole test.
+    if [ "$#" -ge 3 ]; then
+        sh_ao_prefix=$2
+        shift 2
+    fi
+    # After the shift the line is $1 in both forms: three arguments shift the file
+    # and the prefix away, and two arguments shift nothing, so $1 must be the
+    # FILE and $2 the line - which is why the assignment below is the two
+    # argument case's job, not an afterthought.
+    if [ "$#" -ge 2 ]; then
+        sh_ao_line=$2
+    else
+        sh_ao_line=$1
+    fi
+    sh_ao_tmp=""
     SH_ADDED=0
     : >> "$sh_ao_file"
+    if [ -n "$sh_ao_prefix" ]; then
+        # The scratch file is created with `set -C` (noclobber) and opened
+        # ONCE, so a symlink planted at the predictable name is a refusal
+        # rather than a write through to whatever it points at. `>` on an
+        # existing symlink follows it; `>|` refuses only if the NAME exists.
+        # $$ is not a secret, and this file sits beside ~/.profile, so the
+        # name is guessable by anyone who can write the home directory.
+        # mktemp is not used because the tree may not require a tool it is
+        # installing - the same rule that keeps it off awk and sed.
+        sh_ao_tmp=$sh_ao_file.sh_ao.$$
+        if ( set -C; : > "$sh_ao_tmp" ) 2>/dev/null; then
+            :
+        else
+            # Another run holds it, or something is in the way. Leave the file
+            # alone rather than writing through it.
+            return 0
+        fi
+        sh_ao_seen=0
+        sh_ao_body=''
+        while IFS= read -r sh_ao_existing; do
+            case "$sh_ao_existing" in
+                "$sh_ao_prefix"*)
+                    if [ "$sh_ao_seen" = 0 ]; then
+                        sh_ao_body=$sh_ao_existing
+                        sh_ao_seen=1
+                    fi
+                    ;;
+                *) : ;;
+            esac
+        done < "$sh_ao_file"
+        if [ "$sh_ao_seen" = 0 ]; then
+            printf '\n# Added by %s.\n%s\n' "$SH_SELF" "$sh_ao_line" >> "$sh_ao_file"
+            SH_ADDED=1
+            rm -f "$sh_ao_tmp" 2>/dev/null
+            return 0
+        fi
+        if [ "$sh_ao_body" = "$sh_ao_line" ]; then
+            rm -f "$sh_ao_tmp" 2>/dev/null
+            return 0
+        fi
+        # One block, rewritten in place, so the file keeps the order it had and
+        # the current root is the only one on it. The replacement is written on
+        # the FIRST matching line and every later one is dropped, which is why
+        # this cannot be the same loop that found the first: a single flag set
+        # while finding is already 1 by the time the rewrite runs, and an
+        # earlier version of this code did exactly that and wrote an empty
+        # .profile. `sh_ao_wrote` counts the replacements actually made.
+        # Not truncated again here: it was created empty by the noclobber open
+        # above, and a second `: >` on a path that now exists is exactly the
+        # write-through the noclobber open was there to refuse.
+        sh_ao_wrote=0
+        while IFS= read -r sh_ao_existing; do
+            case "$sh_ao_existing" in
+                "$sh_ao_prefix"*)
+                    if [ "$sh_ao_wrote" = 0 ]; then
+                        printf '%s\n' "$sh_ao_line" >> "$sh_ao_tmp"
+                        sh_ao_wrote=1
+                    fi
+                    ;;
+                *)
+                    printf '%s\n' "$sh_ao_existing" >> "$sh_ao_tmp"
+                    ;;
+            esac
+        done < "$sh_ao_file"
+        mv -f "$sh_ao_tmp" "$sh_ao_file" 2>/dev/null || {
+            rm -f "$sh_ao_tmp" 2>/dev/null
+            return 0
+        }
+        SH_ADDED=1
+        return 0
+    fi
     while read -r sh_ao_existing; do
         if [ "$sh_ao_existing" = "$sh_ao_line" ]; then
             return 0
@@ -435,13 +557,22 @@ sh_append_once() {
 sh_append_login() {
     sh_al_line=$1
     sh_al_what=$2
-    sh_append_once "$HOME/.profile" "$sh_al_line"
+    sh_al_prefix=${3:-}
+    if [ -n "$sh_al_prefix" ]; then
+        sh_append_once "$HOME/.profile" "$sh_al_prefix" "$sh_al_line"
+    else
+        sh_append_once "$HOME/.profile" "$sh_al_line"
+    fi
     if [ "$SH_ADDED" = 1 ]; then
         sh_step "added $sh_al_what to $HOME/.profile"
     fi
     for sh_al_file in "$HOME/.bash_profile" "$HOME/.bash_login"; do
         if [ -f "$sh_al_file" ]; then
-            sh_append_once "$sh_al_file" "$sh_al_line"
+            if [ -n "$sh_al_prefix" ]; then
+                sh_append_once "$sh_al_file" "$sh_al_prefix" "$sh_al_line"
+            else
+                sh_append_once "$sh_al_file" "$sh_al_line"
+            fi
             if [ "$SH_ADDED" = 1 ]; then
                 sh_step "added $sh_al_what to $sh_al_file"
             fi
@@ -454,9 +585,14 @@ sh_append_login() {
 sh_append_rc() {
     sh_ar_line=$1
     sh_ar_what=$2
+    sh_ar_prefix=${3:-}
     for sh_ar_file in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.kshrc"; do
         if [ -f "$sh_ar_file" ]; then
-            sh_append_once "$sh_ar_file" "$sh_ar_line"
+            if [ -n "$sh_ar_prefix" ]; then
+                sh_append_once "$sh_ar_file" "$sh_ar_prefix" "$sh_ar_line"
+            else
+                sh_append_once "$sh_ar_file" "$sh_ar_line"
+            fi
             if [ "$SH_ADDED" = 1 ]; then
                 sh_step "added $sh_ar_what to $sh_ar_file"
             fi

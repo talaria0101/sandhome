@@ -36,17 +36,27 @@
 #   - Tab completion of command names and paths
 #   - bracketed paste, so a pasted newline does not execute
 #   - Ctrl-D, exit and logout leave; the shell and the cwd persist
+#   - full-screen programs (nano, less, top, htop, vi, ...) in the foreground,
+#     through a USERSPACE pty: the cage has no /dev/ptmx, so shims/fakepty.c is
+#     preloaded and makes the session descriptors look like a terminal. It is
+#     exported and exec'd, so a subshell a program spawns keeps the terminal.
 #   - `errandsh -c 'cmd'` is an exec channel with no line discipline at all
 #
-# WHAT IT CANNOT DO, STATED PLAINLY. There is no pty, so a full-screen TUI
-# cannot run: nothing in userspace can create /dev/ptmx. This covers the
-# interactive LINE. It is not a terminal emulator and does not pretend to be.
+# WHAT IT CANNOT DO, STATED PLAINLY. The pty is userspace, so it cannot reach a
+# STATICALLY LINKED full-screen program: LD_PRELOAD has nothing to interpose
+# into. A dynamically linked one works, and the common ones are dynamic. A
+# full-screen command is run in the foreground instead of through the child
+# shell, so it does not see that shell's aliases or functions; the cwd is
+# restored from the last command.
 #
 # ENVIRONMENT.
 #   ERRANDSH_NAME     the name in the prompt. Default: the hostname.
 #   ERRANDSH_HISTORY  the history file. Default $HOME/.errandsh-history.
 #   ERRANDSH_SHELL    the shell commands run in. Default /bin/sh.
 #   ERRANDSH_MAXHIST  history lines kept. Default 500.
+#   ERRANDSH_PTY      set to 0 to stop full-screen programs being auto-run in
+#                     the foreground; `pty CMD` still forces it.
+#   ERRANDSH_PTY_PROGRAMS  the programs auto-run in the foreground.
 #   NO_COLOR          set to anything to drop colour.
 #
 # TESTED on dash and on bash --posix; see tests/errandsh-posix.sh.
@@ -514,6 +524,90 @@ rsearch_next() {
     emit "$CR$(printf '\033[K')$C_CYN(rsearch)\`$SEARCH\`$C_RST $_m"
 }
 
+# ----------------------------------------------------------------- fake pty
+# A full-screen program cannot run through the child shell: the child reads
+# commands from a fifo, so a program asking for a terminal gets a pipe, and the
+# line discipline above is still the one reading the keys. There is no
+# /dev/ptmx in the cage this exists for, so no kernel pty can be made either.
+# What works is to run the command in the FOREGROUND on the session's own
+# descriptors with shims/fakepty.c preloaded (shell/faketty exports it), so the
+# program gets isatty()==1, a termios and a window size, and reads the
+# operator's keys directly. It is bypassed for that one command, so it does not
+# see the child shell's aliases; the cwd is taken from $LAST_DIR.
+#
+# The list is auto-run; `pty CMD` forces it for anything not listed, and
+# ERRANDSH_PTY=0 turns the automatic path off.
+: "${ERRANDSH_PTY_PROGRAMS:=vi vim nvim nano emacs emacsclient pico less more pg top htop btop watch screen tmux mc joe micro mutt}"
+
+# errandsh_pty_command CMD -> CMD with a leading `pty ` removed.
+errandsh_pty_command() {
+    case "$1" in
+        "pty "*) printf '%s' "${1#pty }" ;;
+        pty)     printf '' ;;
+        *)       printf '%s' "$1" ;;
+    esac
+}
+
+# errandsh_faketty -> the faketty wrapper beside this script or in the durable
+# repo. The exec view holds a copy of errandsh, so both locations are tried.
+errandsh_faketty() {
+    for _ef_d in "${SANDHOME_REPO_DIR:-}" "${0%/*}"; do
+        [ -n "$_ef_d" ] || continue
+        if [ -r "$_ef_d/shell/faketty" ]; then
+            printf '%s' "$_ef_d/shell/faketty"; return 0
+        fi
+        if [ -r "$_ef_d/faketty" ]; then
+            printf '%s' "$_ef_d/faketty"; return 0
+        fi
+    done
+    return 1
+}
+
+# errandsh_pty_wanted CMD -> 0 for an explicit `pty` request or a program on
+# the list. The first WORD is compared, so `less file` matches and `echo less`
+# does not.
+errandsh_pty_wanted() {
+    case "$1" in
+        "pty "*|pty) return 0 ;;
+    esac
+    _epw_w=${1%% *}
+    _epw_w=${_epw_w##*/}
+    for _epw_p in $ERRANDSH_PTY_PROGRAMS; do
+        [ "$_epw_p" = "$_epw_w" ] && return 0
+    done
+    return 1
+}
+
+# run_pty CMD -> run CMD in the foreground with a userspace pty, on this
+# session's descriptors, and put its status in LAST_RC.
+run_pty() {
+    _rp_cmd=$(errandsh_pty_command "$1")
+    [ -n "$_rp_cmd" ] || return 0
+    hist_save "$_rp_cmd"
+    emit "$_rp_cmd$NL"
+    _rp_rc=0
+    _rp_tty=$(errandsh_faketty) || _rp_tty=''
+    if [ -n "$_rp_tty" ]; then
+        # The subshell is what keeps fd 0-2 pointed at the operator; the `cd`
+        # gives the command the directory the line discipline is in.
+        ( cd "${LAST_DIR:-$PWD}" 2>/dev/null || true
+          sh "$_rp_tty" "${ERRANDSH_SHELL:-/bin/sh}" -c "$_rp_cmd" ) || _rp_rc=$?
+    else
+        # No wrapper: run it plain, which is the old behaviour and at least a
+        # working command rather than a refusal. The warning is said once, so
+        # the cause of a batch-mode TUI is visible without flooding the screen.
+        if [ "${ERRANDSH_PTY_WARNED:-0}" != 1 ]; then
+            emit "errandsh: [!] no faketty wrapper found; a full-screen program runs without a terminal${NL}"
+            ERRANDSH_PTY_WARNED=1
+        fi
+        ( cd "${LAST_DIR:-$PWD}" 2>/dev/null || true
+          sh -c "$_rp_cmd" ) || _rp_rc=$?
+    fi
+    LAST_RC=$_rp_rc
+    emit "$NL"
+    return 0
+}
+
 # ----------------------------------------------------------------- execution
 # The command goes to the child's stdin, then a marker that carries the exit
 # code and the cwd back. Output is read until the marker; everything before it
@@ -524,6 +618,15 @@ run_command() {
     case "$_cmd" in
         exit|logout) cleanup ;;
     esac
+    # A full-screen program is handed the session directly; everything else
+    # keeps the persistent child shell.
+    case "$_cmd" in
+        "pty "*|pty) run_pty "$_cmd"; return 0 ;;
+    esac
+    if [ "${ERRANDSH_PTY:-1}" != 0 ] && errandsh_pty_wanted "$_cmd"; then
+        run_pty "$_cmd"
+        return 0
+    fi
     hist_save "$_cmd"
     # Echo the command ourselves: the terminal is in raw mode, so nothing
     # echoes it for us, and an operator needs to see what they ran.

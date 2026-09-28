@@ -1,6 +1,6 @@
 ---
 name: sandhome
-description: Set up and repair a portable agent sandbox with sandhome - detect which roots can execute, install or adopt toolchains (jq, ripgrep, fd, python, node, rust, go), write the environment, and diagnose a tool that installed but will not run. Use when a fresh sandbox needs tooling, when HOME is on a noexec mount, when a binary is Permission denied, when go run fails after a successful build, or when an agent needs a toolchain in under a minute.
+description: Set up and repair a portable agent sandbox with sandhome - detect which roots can execute, install or adopt toolchains (jq, ripgrep, fd, python, node, rust, go, zig, clang, deno, bun, mold), download an archive larger than the per-file size limit by sharding it, write the environment, and diagnose a tool that installed but will not run. Use when a fresh sandbox needs tooling, when HOME is on a noexec mount, when a binary is Permission denied, when go run fails after a successful build, when a download dies with File size limit exceeded, or when an agent needs a toolchain in under a minute.
 ---
 
 # sandhome
@@ -77,18 +77,21 @@ installed without an error and does not answer is reported as a failure.
 ## Diagnose a tool that will not run
 
 1. `sandhome space --probe`  -  which root runs a binary, and which is `exec=no`?
-2. `sandhome install <name>`  -  rebuilds the exec view and probes the tool.
+2. `sandhome repair <name>`  -  rebuilds the exec view. Downloads nothing, so it
+   cannot make a working install worse; `install` is the command that adopts and
+   downloads, and on an adopted toolchain that is what broke the view in the
+   first place.
 3. `sandhome doctor`  -  one line per invariant, ending in `doctor_failures=N`.
 
 | symptom | fix |
 | --- | --- |
-| `Permission denied` on a binary | the exec view was not built; `sandhome install <name>` |
-| `collect2: posix_spawnp: Permission denied` linking rust | the sysroot linker is on the noexec home and cannot be exec'd; no `-fuse-ld` value fixes it. `sandhome install --force rust` puts the toolchain on the exec root |
-| `fork/exec ...: permission denied` after a successful `go build` | the build cache was on a noexec root; `sandhome install go` puts `GOCACHE` and `GOBIN` on the exec root, for an adopted go too |
+| `Permission denied` on a binary | the exec view was not built; `sandhome repair <name>` |
+| `Too many levels of symbolic links` on a binary | the view links a tool to itself; `sandhome repair <name>` rewrites the link |
+| `collect2: posix_spawnp: Permission denied` linking rust | the sysroot linker is on the noexec home and cannot be exec'd; no `-fuse-ld` value fixes it. `sandhome install --force rust` puts the toolchain on the exec root || `fork/exec ...: permission denied` after a successful `go build` | the build cache was on a noexec root; `sandhome install go` puts `GOCACHE` and `GOBIN` on the exec root, for an adopted go too |
 | `npm i -g` CLI missing or `bad interpreter` | prefix was on the noexec home; `sandhome install node` moves it to the exec root |
 | ANSI codes inside `jq` or `git` output | `fakepty` is on; `SANDHOME_SHIMS=0` |
 | a tool is absent from a fresh shell | `$SANDHOME_HOME/env.sh` was not read |
-| a tool is absent even after `env.sh` was read | it was adopted and could not be linked into the exec view; `sandhome install --force <name>` |
+| a tool is absent even after `env.sh` was read | it was adopted and could not be linked into the exec view; `sandhome repair <name>` retries the link, and `sandhome install --force <name>` places a copy in the view when the adopted binary cannot be linked at all |
 | `doctor` says `FAIL exec_space=low` or `=critical` | the exec root is draining and a build will fail with `no space left on device`. `sandhome space` names the state, `sandhome space --probe` lists roomier candidates, `sandhome gc` reclaims sandhome's own caches, and re-running setup with `--exec DIR` moves everything to a roomy path |
 
 ## Add a toolchain

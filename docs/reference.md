@@ -18,12 +18,17 @@ usage: sandhome COMMAND [args]
   install --force NAME   install NAME even when a working copy is on PATH
   install rust --target T   add rust cross targets (comma list, repeatable)
   ensure NAME...         alias for install
+  repair [NAME...]       rebuild the exec view and launchers, downloading
+                         nothing. The fix for "Permission denied" on a tool
+                         that is already installed or adopted. No names means
+                         every toolchain sandhome knows.
   shims [build]          build the LD_PRELOAD shims this machine needs
   test                   run this checkout's whole test suite
   selftest               the checks that need this machine and no network
   selftest shims         build and exercise the LD_PRELOAD shims
   selftest exec          the noexec-home end-to-end: install, promote, run
-  shell [args]           run errandsh, the pty-less line discipline
+  shell [args]           run errandsh, the line discipline with a userspace pty
+  pty CMD...             run CMD with a userspace pty (no /dev/ptmx needed)
   exec CMD...            run CMD with the sandhome environment loaded
   report [--json]        the full report
   gc [DAYS] [--dry-run]   remove staging older than DAYS (default 7)
@@ -33,7 +38,9 @@ usage: sandhome COMMAND [args]
 Environment:
   SANDHOME_HOME   the persistent data root (default $XDG_DATA_HOME/sandhome)
   SANDHOME_EXEC   the exec-capable root; detected when unset
-  SANDHOME_REPO   the checkout that holds lib/, tools/ and shell/
+  SANDHOME_REPO   owner/name to fetch when run from a pipe (default
+                  talaria0101/sandhome). The checkout that holds lib/ is named
+                  by SANDHOME_REPO_DIR, which env.sh sets.
   SANDHOME_SHIMS  set to 1 to put the shims in LD_PRELOAD
   SANDHOME_PASSWD_USERS   extra names for the synthetic passwd database
   SANDHOME_SHA256 a default digest for downloads with no pin of their own.
@@ -126,8 +133,8 @@ usage: sh bootstrap.sh [options]
 | `minimal` | jq |
 | `cli` | jq ripgrep fd |
 | `developer` | jq ripgrep fd python node |
-| `languages` | jq ripgrep fd python node rust go |
-| `agent` | jq ripgrep fd python node rust go |
+| `languages` | jq ripgrep fd python node rust go zig deno bun mold |
+| `agent` | jq ripgrep fd python node rust go zig deno bun mold |
 
 ## Environment variables
 
@@ -137,15 +144,20 @@ usage: sh bootstrap.sh [options]
 | `SANDHOME_CRIT_MB` | space.sh sandhome | `unset, and the feature is off until it is set` |
 | `SANDHOME_DOH_CANARY` | fetch.sh | `https://github.com` |
 | `SANDHOME_DOH_URL` | fetch.sh bootstrap.sh sandhome | `unset, and the feature is off until it is set` |
-| `SANDHOME_EXEC` | env.sh report.sh space.sh bootstrap.sh sandhome fd.sh go.sh jq.sh node.sh python.sh ripgrep.sh rust.sh zig.sh | `unset, and the feature is off until it is set` |
+| `SANDHOME_EXEC` | env.sh report.sh space.sh bootstrap.sh sandhome fd.sh go.sh jq.sh node.sh python.sh ripgrep.sh rust.sh zig.sh | `*)` |
+| `SANDHOME_FAKEPTY` | env.sh | `unset, and the feature is off until it is set` |
+| `SANDHOME_FAKEPTY_ID` | env.sh | `unset, and the feature is off until it is set` |
+| `SANDHOME_FETCH_CHUNK_MB` | fetch.sh | `256` |
 | `SANDHOME_FETCH_DIR` | bootstrap.sh | `$SH_FETCH_DIR` |
 | `SANDHOME_GO_DL_JSON_URL` | sandhome go.sh | `unset, and the feature is off until it is set` |
 | `SANDHOME_GO_VERSION_URL` | sandhome go.sh | `unset, and the feature is off until it is set` |
 | `SANDHOME_HERE` | profile.sh | `unset, and the feature is off until it is set` |
 | `SANDHOME_HOME` | env.sh profile.sh space.sh bootstrap.sh sandhome go.sh node.sh python.sh rust.sh | `unset, and the feature is off until it is set` |
+| `SANDHOME_LLVM_TAG` | clang.sh | `unset, and the feature is off until it is set` |
 | `SANDHOME_LOW_EXEC_MB` | space.sh sandhome | `unset, and the feature is off until it is set` |
 | `SANDHOME_LOW_EXEC_PCT` | space.sh sandhome | `unset, and the feature is off until it is set` |
 | `SANDHOME_MIN_EXEC_MB` | space.sh sandhome | `128` |
+| `SANDHOME_MOLD_VERSION` | mold.sh | `unset, and the feature is off until it is set` |
 | `SANDHOME_NODE_INDEX_URL` | sandhome node.sh | `unset, and the feature is off until it is set` |
 | `SANDHOME_NO_PROFILE` | profile.sh | `unset, and the feature is off until it is set` |
 | `SANDHOME_NO_REFETCH` | bootstrap.sh | `1` |
@@ -160,6 +172,9 @@ usage: sh bootstrap.sh [options]
 | `SANDHOME_REQUIRE_DIGEST` | fetch.sh sandhome | `unset, and the feature is off until it is set` |
 | `SANDHOME_RUST_TARGETS` | sandhome rust.sh | `unset, and the feature is off until it is set` |
 | `SANDHOME_SHA256` | fetch.sh bootstrap.sh sandhome | `unset, and the feature is off until it is set` |
+| `SANDHOME_SHA256_BUN` | fetch.sh | `unset, and the feature is off until it is set` |
+| `SANDHOME_SHA256_CLANG` | fetch.sh | `unset, and the feature is off until it is set` |
+| `SANDHOME_SHA256_DENO` | fetch.sh | `unset, and the feature is off until it is set` |
 | `SANDHOME_SHA256_FD` | fetch.sh | `unset, and the feature is off until it is set` |
 | `SANDHOME_SHA256_GO` | fetch.sh | `unset, and the feature is off until it is set` |
 | `SANDHOME_SHA256_JQ` | fetch.sh bootstrap.sh | `unset, and the feature is off until it is set` |
@@ -167,6 +182,7 @@ usage: sh bootstrap.sh [options]
 | `SANDHOME_SHA256_JQ_LINUX_ARM64` | fetch.sh | `unset, and the feature is off until it is set` |
 | `SANDHOME_SHA256_JQ_LINUX_I386` | fetch.sh | `unset, and the feature is off until it is set` |
 | `SANDHOME_SHA256_JQ_MACOS_AMD64` | fetch.sh | `unset, and the feature is off until it is set` |
+| `SANDHOME_SHA256_MOLD` | fetch.sh | `unset, and the feature is off until it is set` |
 | `SANDHOME_SHA256_NODE` | fetch.sh | `unset, and the feature is off until it is set` |
 | `SANDHOME_SHA256_PYTHON` | fetch.sh | `unset, and the feature is off until it is set` |
 | `SANDHOME_SHA256_RIPGREP` | fetch.sh bootstrap.sh | `unset, and the feature is off until it is set` |
@@ -183,20 +199,25 @@ usage: sh bootstrap.sh [options]
 | `ERRANDSH_HISTORY` | `(unset)` |
 | `ERRANDSH_MAXHIST` | `(unset)` |
 | `ERRANDSH_NAME` | `(unset)` |
+| `ERRANDSH_PTY` | `(unset)` |
 | `ERRANDSH_SHELL` | `(unset)` |
 
 ## Toolchains
 
 | name | binaries on PATH | description |
 | --- | --- | --- |
+| `bun` | `bun` | Bun, a JavaScript/TypeScript runtime and toolkit (single binary) |
+| `clang` | `bin/clang bin/clang++` | Clang/LLVM, from the official LLVM release tarball (a >1GB download) |
+| `deno` | `deno` | Deno, a TypeScript/JavaScript runtime (single binary, from GitHub) |
 | `fd` | `bin/fd` | fd, a fast and user-friendly find replacement |
 | `go` | `go/bin/go go/bin/gofmt` | Go, from the official go.dev tarball (GOROOT stays in the home root) |
 | `jq` | `bin/jq` | jq, the command-line JSON processor (single static binary) |
+| `mold` | `bin/mold bin/ld.mold` | mold, a fast ELF linker (gcc/clang/rust via -fuse-ld=mold) |
 | `node` | `bin/node bin/npm bin/npx` | Node.js with the bundled npm, from the official nodejs.org tarball |
 | `python` | `(via its own PATH fragment)` | CPython, installed by uv (uv is always left on PATH) |
 | `ripgrep` | `bin/rg` | ripgrep (rg), the fast recursive search tool |
 | `rust` | `cargo/bin/rustup cargo/bin/cargo` | Rust via rustup (rustc, cargo, rustup; minimal profile) |
-| `zig` | `zig` | zig cc cross compiler (also links native rust when the sysroot is noexec) |
+| `zig` | `zig` | zig cc cross compiler and linker, from the official tarball |
 
 ## Tests
 

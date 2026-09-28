@@ -8,7 +8,7 @@ from `~/.agents/skills/` or `~/.pi/agent/skills/` once copied or linked there.
 | skill | use it when |
 | --- | --- |
 | [`sandhome`](sandhome/SKILL.md) | a sandbox needs tooling, `HOME` is on a noexec mount, or a tool installed but will not run |
-| [`errandsh`](errandsh/SKILL.md) | a remote shell has no echo, line editing or signals because there is no pty |
+| [`errandsh`](errandsh/SKILL.md) | a remote shell has no echo, line editing or signals because there is no pty, or a full-screen program must run without one |
 | [`sealed-sandbox`](sealed-sandbox/SKILL.md) | a cage denies bind, chroot, `/etc/passwd` or a terminal |
 
 To make them available to an agent without copying:

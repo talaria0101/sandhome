@@ -61,11 +61,15 @@ sandhome shims
 SANDHOME_SHIMS=1 . "$SANDHOME_HOME/env.sh"
 ```
 
-**Off by default, and it must stay off**: `fakepty` makes every terminal-aware
-program colourise a pipe. Turn it on for the one shell that needs a terminal
-and off the moment you need clean output.
+**Opt-in, but changes are scoped**: `env.sh` exports the session descriptors'
+readlink identity, so `fakepty` fakes THOSE and leaves a pipe opened later a
+pipe; a pipeline is no longer colourised. Turn it on for the shell that needs a
+terminal, `sandhome pty CMD` for a single command, or `sandhome shell` for an
+interactive line discipline.
 
-No full-screen TUI is possible. Nothing in userspace can create `/dev/ptmx`.
+Full-screen programs DO work: `shims/fakepty.c` is a userspace pty, because the
+kernel offers none, and `sandhome pty nano file` runs it. The only thing it
+cannot reach is a STATICALLY LINKED program, which carries its own libc.
 
 ## No listen
 

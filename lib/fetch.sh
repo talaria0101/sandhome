@@ -240,10 +240,31 @@ sh_fetch() {
         return 0
     fi
     sh_f_hint=$(sh_downloader_hint)
+    # # STOP: "NO DOWNLOADER COULD FETCH" NAMED THE WRONG THING. A downloader
+    # that is present and failing is not a missing downloader, and the message
+    # sent a consumer to install a tool they already had. Measured here by
+    # stripping the egress from a shell that had every downloader installed:
+    #   nodejs.org could not be resolved (curl exit 6, twice, on a known host)
+    #   bootstrap: [!] no downloader could fetch https://nodejs.org/dist/index.json
+    #              (tried curl, wget, fetch); install one first: xbps-install -S curl
+    # ...with curl on PATH the whole time, and the real cause - a resolver that
+    # answers nothing - nowhere in the message. A cage with no resolver is the
+    # situation this tree has a DoH path for, and the message walked past it.
+    #
+    # So the last word is the reason, and the reason is measured rather than
+    # guessed: a downloader that cannot resolve a known host is told so, and the
+    # DoH lever is named. Only when there is genuinely no downloader does the
+    # install-one line appear, because then it is the truth.
+    sh_f_dns=$(sh_curl_dns_exit "$sh_f_url")
+    if [ "$sh_f_dns" = 6 ]; then
+        sh_warn "curl could not resolve the host for $sh_f_url (exit 6): this sandbox has no working resolver"
+        sh_warn "if that is a cage without DNS, set SANDHOME_DOH_URL to a DoH resolver and retry; see docs/guide.md"
+        return 1
+    fi
     if [ -n "$sh_f_hint" ]; then
-        sh_warn "no downloader could fetch $sh_f_url (tried curl, wget, fetch); install one first: $sh_f_hint"
+        sh_warn "a downloader is present but could not fetch $sh_f_url (tried curl, wget, fetch); the exit was not a DNS failure, so check the URL and this sandbox's egress"
     else
-        sh_warn "no curl, wget or fetch is present, so nothing can be downloaded"
+        sh_warn "no curl, wget or fetch is present, so nothing can be downloaded; install one first: ${sh_f_hint:-your package manager}"
     fi
     return 1
 }
@@ -293,6 +314,20 @@ sh_sha256_which() {
     if sh_have openssl;   then printf 'openssl';   return 0; fi
     if sh_have python3;  then printf 'python3';   return 0; fi
     if sh_have node;     then printf 'node';      return 0; fi
+    printf ''
+}
+
+# sh_sha256_stream_which -> the name of a tool that can hash a STREAM here, or
+# nothing. It is a different list from sh_sha256_which because the streaming
+# tools must read stdin, and the choice is asked before the bytes move for the
+# same reason SANDHOME_REQUIRE_DIGEST asks before a download.
+sh_sha256_stream_which() {
+    if sh_have sha256sum; then printf 'sha256sum'; return 0; fi
+    if sh_have sha256;    then printf 'sha256';    return 0; fi
+    if sh_have shasum;    then printf 'shasum';    return 0; fi
+    if sh_have openssl;   then printf 'openssl';   return 0; fi
+    if sh_have python3; then printf 'python3'; return 0; fi
+    if sh_have node;    then printf 'node';    return 0; fi
     printf ''
 }
 
@@ -405,9 +440,13 @@ sh_pin_for() {
     sh_pf_published=${3:-}
     if [ -n "$sh_pf_name" ]; then
         case "$sh_pf_name" in
+            bun)     [ -n "${SANDHOME_SHA256_BUN:-}" ] && { printf '%s' "$SANDHOME_SHA256_BUN"; return 0; } ;;
+            clang)   [ -n "${SANDHOME_SHA256_CLANG:-}" ] && { printf '%s' "$SANDHOME_SHA256_CLANG"; return 0; } ;;
+            deno)    [ -n "${SANDHOME_SHA256_DENO:-}" ] && { printf '%s' "$SANDHOME_SHA256_DENO"; return 0; } ;;
             fd)      [ -n "${SANDHOME_SHA256_FD:-}" ] && { printf '%s' "$SANDHOME_SHA256_FD"; return 0; } ;;
             go)      [ -n "${SANDHOME_SHA256_GO:-}" ] && { printf '%s' "$SANDHOME_SHA256_GO"; return 0; } ;;
             jq)      [ -n "${SANDHOME_SHA256_JQ:-}" ] && { printf '%s' "$SANDHOME_SHA256_JQ"; return 0; } ;;
+            mold)    [ -n "${SANDHOME_SHA256_MOLD:-}" ] && { printf '%s' "$SANDHOME_SHA256_MOLD"; return 0; } ;;
             node)    [ -n "${SANDHOME_SHA256_NODE:-}" ] && { printf '%s' "$SANDHOME_SHA256_NODE"; return 0; } ;;
             python)  [ -n "${SANDHOME_SHA256_PYTHON:-}" ] && { printf '%s' "$SANDHOME_SHA256_PYTHON"; return 0; } ;;
             ripgrep) [ -n "${SANDHOME_SHA256_RIPGREP:-}" ] && { printf '%s' "$SANDHOME_SHA256_RIPGREP"; return 0; } ;;
@@ -450,6 +489,15 @@ sh_pin_for() {
         RUSTUP-*) [ -n "${SANDHOME_SHA256_RUST:-}" ] && { printf '%s' "$SANDHOME_SHA256_RUST"; return 0; } ;;
         ZIG)     [ -n "${SANDHOME_SHA256_ZIG:-}" ] && { printf '%s' "$SANDHOME_SHA256_ZIG"; return 0; } ;;
         ZIG-*)   [ -n "${SANDHOME_SHA256_ZIG:-}" ] && { printf '%s' "$SANDHOME_SHA256_ZIG"; return 0; } ;;
+        MOLD)    [ -n "${SANDHOME_SHA256_MOLD:-}" ] && { printf '%s' "$SANDHOME_SHA256_MOLD"; return 0; } ;;
+        MOLD-*)  [ -n "${SANDHOME_SHA256_MOLD:-}" ] && { printf '%s' "$SANDHOME_SHA256_MOLD"; return 0; } ;;
+        CLANG)   [ -n "${SANDHOME_SHA256_CLANG:-}" ] && { printf '%s' "$SANDHOME_SHA256_CLANG"; return 0; } ;;
+        CLANG-*) [ -n "${SANDHOME_SHA256_CLANG:-}" ] && { printf '%s' "$SANDHOME_SHA256_CLANG"; return 0; } ;;
+        LLVM-*)  [ -n "${SANDHOME_SHA256_CLANG:-}" ] && { printf '%s' "$SANDHOME_SHA256_CLANG"; return 0; } ;;
+        DENO)    [ -n "${SANDHOME_SHA256_DENO:-}" ] && { printf '%s' "$SANDHOME_SHA256_DENO"; return 0; } ;;
+        DENO-*)  [ -n "${SANDHOME_SHA256_DENO:-}" ] && { printf '%s' "$SANDHOME_SHA256_DENO"; return 0; } ;;
+        BUN)     [ -n "${SANDHOME_SHA256_BUN:-}" ] && { printf '%s' "$SANDHOME_SHA256_BUN"; return 0; } ;;
+        BUN-*)   [ -n "${SANDHOME_SHA256_BUN:-}" ] && { printf '%s' "$SANDHOME_SHA256_BUN"; return 0; } ;;
         UV)      [ -n "${SANDHOME_SHA256_PYTHON:-}" ] && { printf '%s' "$SANDHOME_SHA256_PYTHON"; return 0; } ;;
         UV-*)    [ -n "${SANDHOME_SHA256_PYTHON:-}" ] && { printf '%s' "$SANDHOME_SHA256_PYTHON"; return 0; } ;;
     esac
@@ -474,7 +522,7 @@ sh_pin_for() {
 # sh_pin_names -> every toolchain name a `SANDHOME_SHA256_<NAME>` pin answers to.
 # Printed so tests/unit.sh can require one entry per module in tools/, which is
 # what keeps the closed `case` above from going stale when a module is added.
-sh_pin_names() { printf ' fd go jq node python ripgrep rust zig\n'; }
+sh_pin_names() { printf ' fd go jq node python ripgrep rust zig mold clang deno bun\n'; }
 
 # sh_pin_from URL [NAME] [PUBLISHED] -> the NAME of the pin that answered for
 # this URL, or nothing. The provenance line in the report names it, because a
@@ -729,6 +777,433 @@ sh_fetch_verified() {
     return 0
 }
 
+# ------------------------------------------------------- the file-size limit --
+# A sandbox can cap the size of any one file a process writes (RLIMIT_FSIZE).
+# Measured on this host: a 2GB GitHub release asset stopped at exactly
+# 1,000,000,000 bytes, curl died with `File size limit exceeded`, and the same
+# transfer split into ranges landed whole. Nothing inside the sandbox can raise
+# the limit (the hard limit is fixed too), and resuming appends to a file that is
+# already at the cap, so a single file larger than the limit is unreachable by
+# construction. The answer is to never make one: fetch ranges into part files
+# that each stay under the limit, and read them back as a stream.
+
+# sh_fsize_cap_bytes -> the soft RLIMIT_FSIZE in bytes, or 0 when unlimited.
+# POSIX defines `ulimit -f` in 512-byte blocks, and dash reports it that way;
+# bash reports the same limit in 1024-byte blocks, so a bash caller gets a
+# conservative (smaller) answer rather than a wrong one.
+sh_fsize_cap_bytes() {
+    sh_fsc_v=$(ulimit -f 2>/dev/null) || { printf '0'; return 0; }
+    case "$sh_fsc_v" in
+        ''|*[!0-9]*) printf '0'; return 0 ;;
+    esac
+    if [ "$sh_fsc_v" -ge 2147483648 ]; then
+        printf '0'
+        return 0
+    fi
+    printf '%s' "$((sh_fsc_v * 512))"
+}
+
+# sh_fetch_chunk_bytes -> the range size the sharded fetcher uses: the caller's
+# SANDHOME_FETCH_CHUNK_MB (default 256), capped at three quarters of the
+# file-size limit so neither a part nor the digest's own read touches the cap.
+: "${SANDHOME_FETCH_CHUNK_MB:=256}"
+sh_fetch_chunk_bytes() {
+    sh_fch_n=${SANDHOME_FETCH_CHUNK_MB:-256}
+    case "$sh_fch_n" in
+        ''|*[!0-9]*) sh_fch_n=256 ;;
+    esac
+    sh_fch_chunk=$((sh_fch_n * 1048576))
+    [ "$sh_fch_chunk" -gt 0 ] || sh_fch_chunk=268435456
+    sh_fch_cap=$(sh_fsize_cap_bytes)
+    if [ "$sh_fch_cap" -gt 0 ]; then
+        sh_fch_lim=$((sh_fch_cap / 4 * 3))
+        [ "$sh_fch_lim" -gt 0 ] || sh_fch_lim=65536
+        if [ "$sh_fch_chunk" -gt "$sh_fch_lim" ]; then
+            sh_fch_chunk=$sh_fch_lim
+        fi
+    fi
+    printf '%s' "$sh_fch_chunk"
+}
+
+# sh_fetch_ranges TOTAL CHUNK -> "INDEX START END" per range, inclusive. The
+# index is zero-padded, so `part.*` sorts in order even past a thousand parts: a
+# plain %03d put part.1000 before part.999 in a shell glob.
+sh_fetch_ranges() {
+    sh_frng_total=$1
+    sh_frng_chunk=$2
+    case "$sh_frng_total" in ''|*[!0-9]*) return 1 ;; esac
+    case "$sh_frng_chunk" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$sh_frng_chunk" -gt 0 ] || return 1
+    sh_frng_i=0
+    sh_frng_start=0
+    while [ "$sh_frng_start" -lt "$sh_frng_total" ]; do
+        sh_frng_end=$((sh_frng_start + sh_frng_chunk - 1))
+        if [ "$sh_frng_end" -ge "$sh_frng_total" ]; then
+            sh_frng_end=$((sh_frng_total - 1))
+        fi
+        printf '%06d %s %s\n' "$sh_frng_i" "$sh_frng_start" "$sh_frng_end"
+        sh_frng_start=$((sh_frng_end + 1))
+        sh_frng_i=$((sh_frng_i + 1))
+    done
+    return 0
+}
+
+# sh_url_total_from_headers -> the total byte size from a header block, or
+# nothing. Content-Range is preferred over Content-Length, because the length on
+# a ranged reply is the length of the RANGE, not of the file; and a later
+# Content-Length overwrites an earlier one, because a redirect chain has one
+# Content-Length per response and the LAST is the file (the first is often the
+# 302's zero). Measured: a first version kept the first Content-Length and read a
+# redirect's `0` as the size of a 2GB asset.
+sh_url_total_from_headers() {
+    sh_uth_cr=$(printf '\r')
+    sh_uth_total=''
+    sh_uth_saw_range=0
+    while IFS= read -r sh_uth_l; do
+        sh_uth_l=${sh_uth_l%"$sh_uth_cr"}
+        case "$sh_uth_l" in
+            HTTP/*)
+                # A new response in the chain resets the answer, so the size
+                # comes from the LAST response and a final chunked reply leaves
+                # it empty rather than inheriting a redirect's zero.
+                sh_uth_total=''
+                sh_uth_saw_range=0
+                ;;
+            [Cc]ontent-[Rr]ange:*)
+                sh_uth_t=$(sh_trim "${sh_uth_l##*/}")
+                case "$sh_uth_t" in
+                    ''|*[!0-9]*) : ;;
+                    *) sh_uth_total=$sh_uth_t; sh_uth_saw_range=1 ;;
+                esac
+                ;;
+            [Cc]ontent-[Ll]ength:*)
+                if [ "$sh_uth_saw_range" = 0 ]; then
+                    sh_uth_v=$(sh_trim "${sh_uth_l#*:}")
+                    case "$sh_uth_v" in
+                        ''|*[!0-9]*) : ;;
+                        *) sh_uth_total=$sh_uth_v ;;
+                    esac
+                fi
+                ;;
+        esac
+    done
+    printf '%s' "$sh_uth_total"
+}
+
+# sh_url_content_length URL -> the total byte size, or nothing.
+#
+# TWO METHODS, IN THIS ORDER, BECAUSE HEAD ALONE IS NOT ENOUGH.
+#
+# A HEAD is asked first: it is cheap, and a server that ignores ranges would
+# answer a range request with the WHOLE file, so measuring a 2GB download that
+# way would download it. The reason a range cannot be the only method is that
+# "every release host here answers a HEAD" was measured on one host behind no
+# proxy, and it does not hold generally. Measured here, through the HTTP
+# CONNECT proxy this sandbox egresses through:
+#
+#   $ curl -fsSLI -D - -o /dev/null .../npm-12.1.0.tgz | grep -i content-length
+#   (nothing: an "HTTP/1.1 200 Connection Established" preamble and an
+#    "HTTP/2 200" with no length)
+#   $ curl -fsSL -r 0-0 -D - -o /dev/null .../npm-12.1.0.tgz | grep -i content-range
+#   content-range: bytes 0-0/3053355
+#
+# The size was there all along, behind a method the probe did not use. Because
+# sh_fetch_stream treats "no Content-Length" as "fetch it in one piece", the
+# sharding this whole change exists for was silently disabled on any host whose
+# egress adds that preamble, and on a host with a pinned RLIMIT_FSIZE that one
+# piece then died with SIGXFSZ at the cap. So when HEAD says nothing, a ONE-BYTE
+# range is asked, and its Content-Range carries the total.
+#
+# The byte is discarded and the request is bounded by --max-time, so the cost of
+# the fallback is one byte, never the file. A server that ignores the range
+# answers 200 with a Content-Length for the whole file, which this parser
+# accepts as the total, and the sharding path then downloads that file in
+# pieces and checks every piece's byte count, so an ignoring server is caught
+# rather than silently mis-assembled.
+sh_url_content_length() {
+    sh_ucl_url=$1
+    sh_have curl || { printf ''; return 0; }
+    sh_ucl_total=$(curl -fsSLI -D - -o /dev/null --max-time 30 "$sh_ucl_url" 2>/dev/null |
+        sh_url_total_from_headers)
+    case "$sh_ucl_total" in
+        ''|*[!0-9]*) ;;
+        *) printf '%s' "$sh_ucl_total"; return 0 ;;
+    esac
+    sh_ucl_total=$(curl -fsSL -r 0-0 -D - -o /dev/null --max-time 30 "$sh_ucl_url" 2>/dev/null |
+        sh_url_total_from_headers)
+    case "$sh_ucl_total" in
+        ''|*[!0-9]*) printf '' ;;
+        *) printf '%s' "$sh_ucl_total" ;;
+    esac
+    return 0
+}
+
+# sh_fetch_stream URL DIR -> fetch URL into DIR as part.000000, sharding when the
+# total is known and exceeds the chunk. A small download is one part.000000, so
+# every caller reads a stream the same way. The URL's suffix is recorded in
+# DIR/.suffix (a dotfile, so `part.*` never mistakes it for data) for the
+# unpacker, which cannot recover an archive's format from a part name.
+sh_fetch_stream() {
+    sh_fs_url=$1
+    sh_fs_dir=$2
+    mkdir -p "$sh_fs_dir" 2>/dev/null || { sh_fail "cannot create the fetch directory $sh_fs_dir"; return 1; }
+    sh_fs_name=${sh_fs_url%%\#*}
+    sh_fs_name=${sh_fs_name%%\?*}
+    sh_fs_name=${sh_fs_name##*/}
+    case "$sh_fs_name" in
+        *.tar.gz)  sh_fs_suffix='tar.gz' ;;
+        *.tgz)     sh_fs_suffix='tgz' ;;
+        *.tar.xz)  sh_fs_suffix='tar.xz' ;;
+        *.txz)     sh_fs_suffix='txz' ;;
+        *.tar.zst) sh_fs_suffix='tar.zst' ;;
+        *.tzst)    sh_fs_suffix='tzst' ;;
+        *.tar.bz2) sh_fs_suffix='tar.bz2' ;;
+        *.tbz2)    sh_fs_suffix='tbz2' ;;
+        *.tbz)     sh_fs_suffix='tbz' ;;
+        *.tar)     sh_fs_suffix='tar' ;;
+        *.zip)     sh_fs_suffix='zip' ;;
+        *.gz)      sh_fs_suffix='gz' ;;
+        *.xz)      sh_fs_suffix='xz' ;;
+        *)         sh_fs_suffix='' ;;
+    esac
+    printf '%s\n' "$sh_fs_suffix" > "$sh_fs_dir/.suffix" 2>/dev/null || true
+    rm -f "$sh_fs_dir"/part.* 2>/dev/null
+    sh_fs_total=$(sh_url_content_length "$sh_fs_url")
+    case "$sh_fs_total" in ''|*[!0-9]*) sh_fs_total='' ;; esac
+    sh_fs_chunk=$(sh_fetch_chunk_bytes)
+    if [ -z "$sh_fs_total" ]; then
+        sh_warn "no Content-Length for $sh_fs_url; fetching it in one piece"
+        sh_fetch "$sh_fs_url" "$sh_fs_dir/part.000000" || { rm -f "$sh_fs_dir"/part.* 2>/dev/null; return 1; }
+        return 0
+    fi
+    if [ "$sh_fs_total" -le "$sh_fs_chunk" ]; then
+        sh_fetch "$sh_fs_url" "$sh_fs_dir/part.000000" || { rm -f "$sh_fs_dir"/part.* 2>/dev/null; return 1; }
+        return 0
+    fi
+    if ! sh_have curl; then
+        sh_warn "a ${sh_fs_total}-byte download needs ranged fetching, and only curl provides it; trying one piece"
+        sh_fetch "$sh_fs_url" "$sh_fs_dir/part.000000" || { rm -f "$sh_fs_dir"/part.* 2>/dev/null; return 1; }
+        return 0
+    fi
+    sh_fs_ranges="$sh_fs_dir/.ranges"
+    if ! sh_fetch_ranges "$sh_fs_total" "$sh_fs_chunk" > "$sh_fs_ranges"; then
+        rm -f "$sh_fs_ranges" 2>/dev/null
+        return 1
+    fi
+    sh_fs_parts=$(( (sh_fs_total + sh_fs_chunk - 1) / sh_fs_chunk ))
+    sh_step "fetching $sh_fs_total bytes from $sh_fs_url in $sh_fs_parts ranges"
+    while read -r sh_fs_i sh_fs_start sh_fs_end; do
+        [ -n "$sh_fs_i" ] || continue
+        sh_fs_part="$sh_fs_dir/part.$sh_fs_i"
+        if ! curl -fsSL --retry 3 --retry-delay 2 -r "$sh_fs_start-$sh_fs_end" \
+                -o "$sh_fs_part" "$sh_fs_url" 2>/dev/null; then
+            sh_warn "range $sh_fs_start-$sh_fs_end of $sh_fs_url did not download"
+            rm -f "$sh_fs_ranges" "$sh_fs_dir"/part.* 2>/dev/null
+            return 1
+        fi
+        sh_fs_want=$((sh_fs_end - sh_fs_start + 1))
+        sh_fs_got=$(sh_file_bytes "$sh_fs_part")
+        if [ "$sh_fs_got" != "$sh_fs_want" ]; then
+            sh_warn "range $sh_fs_start-$sh_fs_end of $sh_fs_url returned $sh_fs_got bytes, not $sh_fs_want"
+            rm -f "$sh_fs_ranges" "$sh_fs_dir"/part.* 2>/dev/null
+            return 1
+        fi
+    done < "$sh_fs_ranges"
+    rm -f "$sh_fs_ranges" 2>/dev/null
+    return 0
+}
+
+# sh_stream_cat DIR -> the concatenated bytes of every part, in order.
+sh_stream_cat() {
+    cat "$1"/part.* 2>/dev/null
+}
+
+# sh_stream_size DIR -> the total bytes across the parts.
+sh_stream_size() {
+    sh_ssz_total=0
+    for sh_ssz_p in "$1"/part.*; do
+        [ -e "$sh_ssz_p" ] || continue
+        sh_ssz_n=$(sh_file_bytes "$sh_ssz_p")
+        case "$sh_ssz_n" in ''|*[!0-9]*) continue ;; esac
+        sh_ssz_total=$((sh_ssz_total + sh_ssz_n))
+    done
+    printf '%s' "$sh_ssz_total"
+}
+
+# sh_stream_sha256 DIR -> the digest of the concatenated stream, or nothing.
+sh_stream_sha256() {
+    sh_ssd_dir=$1
+    if sh_have sha256sum; then sh_stream_cat "$sh_ssd_dir" | sh_first_word sha256sum; return 0; fi
+    if sh_have sha256;    then sh_stream_cat "$sh_ssd_dir" | sha256 -q; return 0; fi
+    if sh_have shasum;    then sh_stream_cat "$sh_ssd_dir" | sh_first_word shasum -a 256; return 0; fi
+    if sh_have openssl;   then sh_stream_cat "$sh_ssd_dir" | sh_first_word openssl dgst -sha256 -r; return 0; fi
+    if sh_have python3; then
+        sh_stream_cat "$sh_ssd_dir" | python3 -c 'import hashlib,sys;h=hashlib.sha256()
+for b in iter(lambda: sys.stdin.buffer.read(1048576), b""): h.update(b)
+print(h.hexdigest())'
+        return 0
+    fi
+    if sh_have node; then
+        sh_stream_cat "$sh_ssd_dir" | node -e 'const c=require("crypto"),h=c.createHash("sha256");process.stdin.on("data",d=>h.update(d)).on("end",()=>process.stdout.write(h.digest("hex")))'
+        return 0
+    fi
+    printf ''
+}
+
+# sh_stream_rm DIR -> discard a fetched stream.
+sh_stream_rm() { rm -rf "$1" 2>/dev/null; }
+
+# sh_fetch_verified_stream URL DIR [EXPECTED] -> sh_fetch_stream then prove the
+# bytes, the streaming twin of sh_fetch_verified. The digest is taken over the
+# concatenation in one pass, so a >1GB archive is never a file on disk.
+sh_fetch_verified_stream() {
+    sh_fvs_url=$1
+    sh_fvs_dir=$2
+    if [ "${SANDHOME_REQUIRE_DIGEST:-0}" = 1 ] && [ -z "$(sh_sha256_stream_which)" ]; then
+        sh_fail "SANDHOME_REQUIRE_DIGEST is set and no sha256 tool can read a stream; refusing $sh_fvs_url"
+        return 1
+    fi
+    sh_fvs_expected=${3:-}
+    [ -n "$sh_fvs_expected" ] || sh_fvs_expected=''
+    if ! sh_fetch_stream "$sh_fvs_url" "$sh_fvs_dir"; then
+        return 1
+    fi
+    sh_fvs_actual=$(sh_stream_sha256 "$sh_fvs_dir")
+    if [ -z "$sh_fvs_actual" ]; then
+        if [ "${SANDHOME_REQUIRE_DIGEST:-0}" = 1 ]; then
+            sh_fail "no sha256 tool can read a stream, and SANDHOME_REQUIRE_DIGEST is set; refusing $sh_fvs_url"
+            sh_stream_rm "$sh_fvs_dir"
+            return 1
+        fi
+        sh_warn "no sha256 tool can read a stream, so $sh_fvs_url could not be verified"
+        return 0
+    fi
+    if [ -z "$sh_fvs_expected" ]; then
+        sh_step "sha256 $sh_fvs_actual (taken over the stream; no digest to compare against)"
+        return 0
+    fi
+    if ! sh_expected_wellformed "$sh_fvs_expected"; then
+        sh_stream_rm "$sh_fvs_dir"
+        return 1
+    fi
+    if ! sh_digest_matches "$sh_fvs_actual" "$sh_fvs_expected"; then
+        sh_fail "$sh_fvs_url does not match the expected sha256 (got $sh_fvs_actual over the stream, wanted $sh_fvs_expected)"
+        sh_stream_rm "$sh_fvs_dir"
+        return 1
+    fi
+    sh_step "sha256 matches the expected value (taken over the stream)"
+    return 0
+}
+
+# sh_stream_untar DIR DEST -> unpack the stream without ever writing the archive
+# as one file. The format is the .suffix sh_fetch_stream recorded; a .zip cannot
+# be streamed (its directory sits at the end) and is refused by name.
+sh_stream_untar() {
+    sh_sut_dir=$1
+    sh_sut_dest=$2
+    mkdir -p "$sh_sut_dest" 2>/dev/null || return 1
+    sh_sut_suffix=''
+    if [ -r "$sh_sut_dir/.suffix" ]; then
+        sh_sut_suffix=$(sh_first_line cat "$sh_sut_dir/.suffix")
+    fi
+    case "$sh_sut_suffix" in
+        zip)
+            # # STOP: A ZIP IS MATERIALISED ONLY WHEN IT FITS UNDER THE FILE-SIZE
+            # LIMIT, BECAUSE ITS CENTRAL DIRECTORY SITS AT THE END AND CANNOT BE
+            # READ AS A STREAM. Deno, Bun and every other small zip still unpack;
+            # a >1GB zip is refused by name rather than half-read.
+            sh_sut_cap=$(sh_fsize_cap_bytes)
+            sh_sut_size=$(sh_stream_size "$sh_sut_dir")
+            if [ "$sh_sut_cap" -gt 0 ] && [ "$sh_sut_size" -gt "$sh_sut_cap" ]; then
+                sh_warn "a ${sh_sut_size}-byte zip cannot be unpacked here: its directory is at the end, and the file-size limit is ${sh_sut_cap} bytes"
+                return 1
+            fi
+            sh_sut_zip="$sh_sut_dir/.archive.zip"
+            sh_stream_cat "$sh_sut_dir" > "$sh_sut_zip" || return 1
+            if sh_have unzip; then
+                unzip -q -o "$sh_sut_zip" -d "$sh_sut_dest"
+                sh_sut_rc=$?
+            elif sh_have python3; then
+                # # STOP: THE ARCHIVE'S MODE IS RESTORED, NOT python3's DEFAULT.
+                # zipfile.extractall writes every entry 0644 and ignores
+                # external_attr; unzip honours the same field. So the two
+                # extractors disagree, and the disagreement is invisible until a
+                # toolchain is a zip holding one 0755 binary: deno and bun are
+                # exactly that. Measured here, on the real deno-x86_64-unknown-
+                # linux-gnu.zip:
+                #   external_attr >> 16 == 0o100755, extractall produced 0644,
+                #   and chmod +x on the same bytes ran `deno 2.9.7`.
+                # The module's own `[ -x $root/deno ]` then reported "the deno
+                # archive did not put deno at .../deno" about a download that had
+                # arrived complete and verified. Only a host with a python3 and no
+                # unzip ever saw it, which is why it survived a passing suite.
+                # The mode comes from the archive when it carries one; entries
+                # made by a tool that records no Unix mode keep extractall's
+                # default, so this cannot make a data file executable.
+                python3 -c 'import os,sys,zipfile
+z=zipfile.ZipFile(sys.argv[1])
+for i in z.infolist():
+    p=z.extract(i, sys.argv[2])
+    m=(i.external_attr>>16)&0xFFFF
+    if m & 0o7777:
+        os.chmod(p, m & 0o7777)' "$sh_sut_zip" "$sh_sut_dest"
+                sh_sut_rc=$?
+            else
+                sh_warn 'a .zip arrived and neither unzip nor python3 can open it'
+                sh_sut_rc=1
+            fi
+            rm -f "$sh_sut_zip" 2>/dev/null
+            return $sh_sut_rc ;;
+        tar.gz|tgz|gz)
+            sh_stream_cat "$sh_sut_dir" | tar -xzf - -C "$sh_sut_dest" ;;
+        tar.xz|txz|xz)
+            # # STOP: xz IS GUARDED LIKE bzip2 AND zstd, AND FALLS BACK TO python3.
+            # `tar -xJf` shells out to a decompressor that may simply not be
+            # there, and the tree's rule 4 is that a bootstrap installing the
+            # missing tools cannot require one first. The gap was measured on a
+            # host with python3 and no xz at all, and it is the format Rust, Zig
+            # and LLVM all ship:
+            #   tar (grandchild): xz: Cannot exec: No such file or directory
+            #   sandhome: [-] toolchain zig could not be installed
+            # after the download had already matched Zig's published digest.
+            if sh_have xz; then
+                sh_stream_cat "$sh_sut_dir" | tar -xJf - -C "$sh_sut_dest"
+            elif sh_have python3; then
+                sh_sut_xz="$sh_sut_dir/.archive.tar.xz"
+                sh_stream_cat "$sh_sut_dir" > "$sh_sut_xz" || return 1
+                python3 -c 'import lzma,sys,tarfile
+with lzma.open(sys.argv[1],"rb") as z:
+    with tarfile.open(fileobj=z,mode="r|") as t:
+        t.extractall(sys.argv[2])' "$sh_sut_xz" "$sh_sut_dest"
+                sh_sut_rc=$?
+                rm -f "$sh_sut_xz" 2>/dev/null
+                return $sh_sut_rc
+            else
+                sh_warn 'an xz stream arrived and neither xz nor python3 can read it'
+                return 1
+            fi ;;
+        tar.bz2|tbz2|tbz)
+            if sh_have bzip2; then
+                sh_stream_cat "$sh_sut_dir" | tar -xjf - -C "$sh_sut_dest"
+            else
+                sh_warn 'a bzip2 stream arrived and no bzip2 is present'
+                return 1
+            fi ;;
+        tar.zst|tzst)
+            if sh_have zstd; then
+                sh_stream_cat "$sh_sut_dir" | zstd -dc | tar -xf - -C "$sh_sut_dest"
+            else
+                sh_warn 'a zstd stream arrived and no zstd is present'
+                return 1
+            fi ;;
+        tar|'')
+            sh_stream_cat "$sh_sut_dir" | tar -xf - -C "$sh_sut_dest" ;;
+        *)
+            sh_warn "cannot pick a decompressor for the stream suffix '$sh_sut_suffix'"
+            return 1 ;;
+    esac
+}
+
 # sh_untar TARBALL DEST -> unpack .tar.gz, .tgz, .tar.xz, .txz, .tar.zst or .zip
 # by reading the file, not the URL. A tar that cannot read the compression is
 # reported rather than half-unpacking.
@@ -743,7 +1218,13 @@ sh_untar() {
                 return $?
             fi
             if sh_have python3; then
-                python3 -c 'import sys,zipfile;zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' "$sh_ut_file" "$sh_ut_dest"
+                python3 -c 'import os,sys,zipfile
+z=zipfile.ZipFile(sys.argv[1])
+for i in z.infolist():
+    p=z.extract(i, sys.argv[2])
+    m=(i.external_attr>>16)&0xFFFF
+    if m & 0o7777:
+        os.chmod(p, m & 0o7777)' "$sh_ut_file" "$sh_ut_dest"
                 return $?
             fi
             sh_warn 'a .zip arrived and neither unzip nor python3 can open it'
@@ -753,7 +1234,22 @@ sh_untar() {
     sh_ut_flags=''
     case "$sh_ut_file" in
         *.tar.gz|*.tgz) sh_ut_flags='-xzf' ;;
-        *.tar.xz|*.txz) sh_ut_flags='-xJf' ;;
+        *.tar.xz|*.txz)
+            # The same guard the streaming unpacker carries, for the same
+            # measured reason: a host with python3 and no xz stopped here with
+            # "xz: Cannot exec" on an archive that had already been verified.
+            if sh_have xz; then
+                sh_ut_flags='-xJf'
+            elif sh_have python3; then
+                python3 -c 'import lzma,sys,tarfile
+with lzma.open(sys.argv[1],"rb") as z:
+    with tarfile.open(fileobj=z,mode="r|") as t:
+        t.extractall(sys.argv[2])' "$sh_ut_file" "$sh_ut_dest"
+                return $?
+            else
+                sh_warn 'an xz tarball arrived and neither xz nor python3 can read it'
+                return 1
+            fi ;;
         *.tar.zst|*.tzst)
             if sh_have zstd; then
                 sh_ut_flags='--zstd -xvf'
@@ -780,25 +1276,34 @@ sh_untar() {
     return $?
 }
 
-# sh_fetch_unpack URL DEST_DIR -> download to the home staging area, unpack, and
-# answer the one top-level directory the archive made in MODULE_UNPACK_DIR. A
-# tarball that makes several top-level entries is reported, because guessing
-# which one is the toolchain is how a wrong tree gets moved into place.
+# sh_fetch_unpack URL DEST_DIR [EXPECTED] [NAME] -> download to the home staging
+# area, unpack, and answer the one top-level directory the archive made in
+# MODULE_UNPACK_DIR. A tarball that makes several top-level entries is reported,
+# because guessing which one is the toolchain is how a wrong tree gets moved
+# into place. EXPECTED is a publisher digest used when the caller holds one and
+# no named pin resolved; NAME lets a toolchain pin (SANDHOME_SHA256_<NAME>) rank
+# above it, exactly as sh_pin_for's order requires.
+#
+# The fetch is SHARDED AND THE UNPACK IS STREAMED (sh_fetch_verified_stream,
+# sh_stream_untar), so a >1GB archive is never written as one file. The zip
+# branch materialises the archive first, because a zip's directory is at the
+# end; that is refused above the file-size limit.
 sh_fetch_unpack() {
     sh_fu_url=$1
     sh_fu_dest=$2
+    sh_fu_expected=${3:-}
+    [ -n "$sh_fu_expected" ] || sh_fu_expected=''
     sh_fu_stage=${SH_HOME_TMP:-${TMPDIR:-/tmp}}
     mkdir -p "$sh_fu_stage" 2>/dev/null || return 1
     sh_fu_tmp="$sh_fu_stage/.fetch.$$"
     rm -rf "$sh_fu_tmp" 2>/dev/null
-    mkdir -p "$sh_fu_tmp" 2>/dev/null || return 1
-    sh_fu_file="$sh_fu_tmp/${sh_fu_url##*/}"
-    if ! sh_fetch_verified "$sh_fu_url" "$sh_fu_file" "$(sh_pin_for "$sh_fu_url")"; then
+    mkdir -p "$sh_fu_tmp/parts" 2>/dev/null || return 1
+    if ! sh_fetch_verified_stream "$sh_fu_url" "$sh_fu_tmp/parts" "$(sh_pin_for "$sh_fu_url" "${4:-}" "$sh_fu_expected")"; then
         rm -rf "$sh_fu_tmp" 2>/dev/null
         return 1
     fi
     sh_fu_out="$sh_fu_tmp/out"
-    if ! sh_untar "$sh_fu_file" "$sh_fu_out"; then
+    if ! sh_stream_untar "$sh_fu_tmp/parts" "$sh_fu_out"; then
         rm -rf "$sh_fu_tmp" 2>/dev/null
         return 1
     fi
