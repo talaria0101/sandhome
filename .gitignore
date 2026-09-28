@@ -8,3 +8,7 @@ tmp/
 __pycache__/
 *.pyc
 .DS_Store
+# Harness output. tests/errandsh-posix.sh does not write these; an errand
+# runner does, into the directory it ran from, and a run that leaves the tree
+# dirty is a run nobody can tell apart from real work.
+tests/.*.out.*
