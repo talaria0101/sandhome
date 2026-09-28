@@ -182,14 +182,51 @@ sh_doctor() {
     # empty ones into failures, because a version that is empty is a toolchain
     # that is not reachable and the report alone does not say so.
     if [ -d "$SH_EXEC_VIEWS" ]; then
+        # # STOP: THE REQUESTED LIST IS READ FROM env.sh, NOT FROM THE
+        # ENVIRONMENT. `sh_env_load` sources prefs.sh and env.d/ but not env.sh
+        # - deliberately, because env.sh rewrites PATH and SANDHOME_* and
+        # loading it from inside a command is how a value gets set twice. So a
+        # fresh `sandhome doctor` has SANDHOME_WANTED_TOOLCHAINS unset even
+        # though the file records it, and reading the variable was reading
+        # nothing. It is read here with the shell's own read, the way
+        # sh_space_recorded_exec reads the exec root, because the library may not
+        # use grep and this is the same question: what does the file say.
+        sh_doc_wanted_all=''
+        sh_doc_cr=$(printf '\r')
+        if [ -r "$SH_HOME/env.sh" ]; then
+            while IFS= read -r sh_doc_wl; do
+                sh_doc_wl=${sh_doc_wl%"$sh_doc_cr"}
+                case "$sh_doc_wl" in
+                    SANDHOME_WANTED_TOOLCHAINS=*)
+                        sh_doc_wanted_all=${sh_doc_wl#SANDHOME_WANTED_TOOLCHAINS=}
+                        sh_doc_wanted_all=${sh_doc_wanted_all#\'}
+                        sh_doc_wanted_all=${sh_doc_wanted_all%\'}
+                        sh_doc_wanted_all=${sh_doc_wanted_all#\"}
+                        sh_doc_wanted_all=${sh_doc_wanted_all%\"}
+                        ;;
+                esac
+            done < "$SH_HOME/env.sh"
+        fi
         for sh_doc_t in $(sh_toolchain_available); do
-            case " $(sh_lead "$INSTALLED") $(sh_lead "$ADOPTED") " in
-                *" $sh_doc_t "*) ;;
-                *) continue ;;
+            sh_doc_wanted=no
+            case " $sh_doc_wanted_all " in
+                *" $sh_doc_t "*) sh_doc_wanted=yes ;;
             esac
-            sh_doctor_version=$(sh_toolchain_version "$sh_doc_t")
+            case " $(sh_lead "$INSTALLED") $(sh_lead "$ADOPTED") " in
+                *" $sh_doc_t "*) sh_doc_wanted=yes ;;
+            esac
+            # A toolchain the setup ASKED FOR is checked even when neither
+            # INSTALLED nor ADOPTED names it. Those two are this run's variables
+            # and are empty in a fresh process, so the loop used to skip every
+            # toolchain and report a green readiness gate over a setup that had
+            # just said it could not install five of eleven (issue #38). A name
+            # in neither list is still skipped, because `languages` being
+            # installed says nothing about whether a consumer who never asked
+            # for it wants clang.
+            [ "$sh_doc_wanted" = yes ] || continue
+            sh_doc_version=$(sh_toolchain_version "$sh_doc_t")
             sh_doctor_check "toolchain_$sh_doc_t" \
-                "$([ -n "$sh_doctor_version" ] && printf yes || printf no)" yes
+                "$([ -n "$sh_doc_version" ] && printf yes || printf no)" yes
         done
     fi
     # # STOP: EVERY BINARY THE REPORT ADVERTISES MUST BE THERE AND MUST RUN.

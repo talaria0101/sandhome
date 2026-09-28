@@ -189,6 +189,7 @@ usage: sh bootstrap.sh [options]
 | `SANDHOME_SHA256_RUST` | fetch.sh | `unset, and the feature is off until it is set` |
 | `SANDHOME_SHA256_ZIG` | fetch.sh | `unset, and the feature is off until it is set` |
 | `SANDHOME_SHIMS` | env.sh shim.sh sandhome | `unset, and the feature is off until it is set` |
+| `SANDHOME_WANTED_TOOLCHAINS` | env.sh report.sh | `*)` |
 | `SANDHOME_ZIG_INDEX_URL` | sandhome zig.sh | `unset, and the feature is off until it is set` |
 | `SANDHOME_ZIG_VERSION` | sandhome zig.sh | `unset, and the feature is off until it is set` |
 

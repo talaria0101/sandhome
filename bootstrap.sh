@@ -458,6 +458,13 @@ sandhome_bootstrap_main() {
     for sh_mb_name in $sh_mb_wanted; do
         sh_toolchain_ensure "$sh_mb_name" || true
     done
+    # What was ASKED for, recorded so `sandhome doctor` can check it later. The
+    # names are what the run wanted, not what it managed: a toolchain that
+    # failed to install is exactly the one the readiness gate has to see, and
+    # the failure is already counted in SH_FAILURES, so the bootstrap exits
+    # non-zero on its own (#38).
+    SH_WANTED_TOOLCHAINS=$sh_mb_wanted
+    export SH_WANTED_TOOLCHAINS
 
     if [ "$SH_SHIMS" != none ]; then
         sh_shim_build_all "$SH_REPO_DIR/shims"

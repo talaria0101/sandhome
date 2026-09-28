@@ -70,6 +70,24 @@ sh_env_body() {
     # find its library. Nothing is copied at shell start: a login file that
     # rewrites a file on every login is a login file that fails one day.
     printf 'export SANDHOME_REPO_DIR=${SANDHOME_REPO_DIR:-%s}\n' "$(sh_sq_quote "${SH_REPO_DIR:-}")"
+    # # STOP: THE REQUESTED TOOLCHAINS ARE RECORDED, SO `doctor` CAN CHECK THEM.
+    # doctor is the readiness gate ROUTE.md step 2 tells a session to trust, and
+    # it could only check the toolchains named in INSTALLED or ADOPTED - which
+    # are empty in a fresh process, because they are this run's variables and
+    # not the file's. So on a host where the toolset could not be installed,
+    # `bootstrap.sh --toolset languages` reported
+    #   installed=      adopted=jq ripgrep fd python go
+    #   toolchain.zig= toolchain.mold= toolchain.deno= toolchain.rust=
+    #   failures=6
+    # and `sandhome doctor` then answered `doctor_failures=0` and exited 0,
+    # over five toolchains the setup had just said it could not install
+    # (issue #38). A readiness gate that cannot see what was asked for is not a
+    # readiness gate. The list is written once, as a space-separated value, and
+    # doctor reads it the same way it reads every other fact in this file.
+    if [ -n "${SH_WANTED_TOOLCHAINS:-}" ]; then
+        printf 'SANDHOME_WANTED_TOOLCHAINS=%s\n' "$(sh_sq_quote "$(sh_trim "$SH_WANTED_TOOLCHAINS")")"
+        printf 'export SANDHOME_WANTED_TOOLCHAINS\n'
+    fi
     printf 'export PATH\n'
     printf 'if [ -d "$SANDHOME_HOME/env.d" ]; then\n'
     printf '  for _sh_env_f in "$SANDHOME_HOME"/env.d/*.sh; do\n'

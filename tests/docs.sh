@@ -637,6 +637,24 @@ if grep -q 'clang' "$ts_body" 2>/dev/null; then
 else
     t_ok 0 'clang stays out of every toolset'
 fi
+# # STOP: THE ROUTER SAYS WHAT doctor CHECKS. `doctor` is the readiness gate
+# ROUTE.md step 2 tells a session to trust, and it used to check only the
+# toolchains that happened to be in this run's variables, which are empty in a
+# fresh process - so it reported `doctor_failures=0` over six toolchains the
+# setup had just said it could not install (#38). The requested list is now
+# recorded in env.sh and checked. A router that names the gate must say what
+# the gate covers, or a consumer trusts a check they have not been told the
+# scope of.
+if grep -q 'SANDHOME_WANTED_TOOLCHAINS' "$ROOT/ROUTE.md" 2>/dev/null; then
+    t_ok 0 'the router says doctor checks the requested toolchains (#38)'
+else
+    t_ok 1 'the router says doctor checks the requested toolchains (#38)'
+fi
+if grep -q 'SANDHOME_WANTED_TOOLCHAINS=' "$ROOT/lib/env.sh" 2>/dev/null; then
+    t_ok 0 'env.sh records the toolchains the setup asked for (#38)'
+else
+    t_ok 1 'env.sh records the toolchains the setup asked for (#38)'
+fi
 # C: capacity is gated before writing and gc reclaims caches.
 if grep -q 'sh_view_need' "$ROOT/lib/space.sh" 2>/dev/null; then
     t_ok 0 'the exec view is size-gated before mirroring (#33)'

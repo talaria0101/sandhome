@@ -588,4 +588,53 @@ esac
 st_real=$(cd "$ROOT" && sh "$ROOT/tests/unit.sh" >/dev/null 2>&1; printf '%s' "$?")
 t_is "$st_real" '0' 'a real checkout still runs its suite and exits 0'
 
+# # STOP: DOCTOR CHECKS THE TOOLCHAINS THE SETUP ASKED FOR. `doctor` is the
+# readiness gate ROUTE.md step 2 tells a session to trust, and it only ever
+# checked names in INSTALLED or ADOPTED - which are THIS RUN's variables and are
+# empty in a fresh process. Measured on a host with no compilers, after
+# `bootstrap.sh --toolset languages` reported
+#   installed=   adopted=jq ripgrep fd python go   failures=6
+#   toolchain.zig= toolchain.mold= toolchain.deno= toolchain.bun= toolchain.rust=
+# doctor answered `doctor_failures=0` and exited 0 over six missing toolchains
+# (issue #38). The bootstrap now records what it asked for in env.sh and doctor
+# reads that file, because sh_env_load deliberately does not source env.sh - it
+# rewrites PATH and SANDHOME_*, and reading the VARIABLE was reading nothing.
+d38=$work/doc38
+mkdir -p "$d38/home" "$d38/exec/views"
+# The name has to be a REAL toolchain: the loop walks sh_toolchain_available, so
+# an invented name is never reached and the clause would pass for the wrong
+# reason. jq is present on this host, so the requested-but-absent toolchain is
+# zig, which is hidden from the run by putting the directory holding it last and
+# removing it from the searched set.
+printf 'SANDHOME_WANTED_TOOLCHAINS=%s\n' "'jq zig'" > "$d38/home/env.sh"
+# The real call, with the library sourced the way bin/sandhome sources it.
+# The version function is stubbed rather than trusted to fail: this host HAS a
+# working zig, so tc_zig_version would answer with it and the clause would pass
+# for the wrong reason - the doctor check is what is under test, not whether the
+# machine happens to own a compiler.
+d38_out=$( SH_HOME="$d38/home" SH_EXEC="$d38/exec" SH_EXEC_BIN="$d38/exec/bin" \
+    SH_EXEC_VIEWS="$d38/exec/views" SH_HOME_TOOLCHAINS="$d38/tc" \
+    SH_HOME_TMP="$d38/tmp" SH_HOME_EXEC=no SH_SELF=test \
+    env SANDHOME_REPO_DIR="$ROOT" PATH="$ROOT/bin:$PATH" \
+    sh -c 'for m in common detect space fetch env toolchain shim report; do
+               . "$SANDHOME_REPO_DIR/lib/$m.sh"
+           done
+           # Present, but with no version: the state the issue describes.
+           sh_toolchain_version() { [ "$1" = zig ] && return 0; printf ""; }
+           sh_doctor' 2>&1 )
+case "$d38_out" in
+    *FAIL\ toolchain_zig*) t_ok 0 'doctor fails on a toolchain the setup asked for and did not get (#38)' ;;
+    *) t_ok 1 "doctor fails on a toolchain the setup asked for and did not get (#38) (got $d38_out)" ;;
+esac
+case "$d38_out" in
+    *doctor_failures=0*) t_ok 1 'doctor_failures is not 0 with a requested toolchain missing (#38)' ;;
+    *) t_ok 0 'doctor_failures is not 0 with a requested toolchain missing (#38)' ;;
+esac
+# A toolchain NOT in the requested list is still not a failure, or every host
+# would be told it is missing eleven things it never wanted.
+case "$d38_out" in
+    *FAIL\ toolchain_clang*) t_ok 1 'a toolchain nobody asked for is not a failure (#38)' ;;
+    *) t_ok 0 'a toolchain nobody asked for is not a failure (#38)' ;;
+esac
+
 t_end
