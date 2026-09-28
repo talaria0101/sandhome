@@ -530,7 +530,26 @@ sh_cmd_needs_roots() {
 # is incomplete. selftest takes no network (syntax, unit, space, shims, and the
 # noexec end-to-end when this machine has a noexec root to test with);
 # `sandhome test` runs the whole suite the way a caller does.
+# # STOP: A TEST COMMAND THAT RAN NOTHING EXITS NON-ZERO, AND SAYS WHY. On a
+# network-only install the checkout is fetched without tests/, so every one of
+# these answered "no test named X in this checkout" - or, for `test`, a bare
+# "sh: 0: cannot open .../tests/run.sh: No such file" - and then exited 0. A
+# consumer checking a setup with the command the router names was told it
+# passed (issue #39). Nothing ran, and the exit code was the only thing that
+# could have said so.
+#
+# The missing suite is now named as a whole rather than file by file, because
+# the cause is one thing - no tests/ in the checkout - and the per-file message
+# reads as seven unrelated absences. A clone has them and is unaffected.
 cmd_selftest() {
+    if [ ! -d "$SH_REPO_DIR/tests" ]; then
+        sh_say "this checkout has no tests/ directory, so there is nothing to self-test"
+        # sh_fail, not sh_say: the dispatcher ends non-zero only on SH_FAILURES,
+        # so a sh_say here and a `return 2` that nothing reads produced exit 0
+        # over a command that ran nothing, which is the defect itself.
+        sh_fail "selftest has no suite to run: this is a network-only checkout, which fetches the library without tests/; clone the repository to run it"
+        return 2
+    fi
     case ${1:-} in
         shims) sandhome_test_one shims ;;
         exec)  sandhome_test_one bootstrap ;;
@@ -545,6 +564,7 @@ cmd_selftest() {
                  sandhome_test_one bootstrap
                  sandhome_test_one toolchain ;;
     esac
+    return $?
 }
 
 sandhome_test_one() {
@@ -564,7 +584,17 @@ sandhome_test_one() {
     esac
 }
 
-cmd_test() { sh "$SH_REPO_DIR/tests/run.sh"; }
+cmd_test() {
+    # The same guard as selftest, and for the same reason: `sh run.sh` on a
+    # checkout without it printed a raw "cannot open" from the shell and the
+    # command still exited 0, which is worse than a refusal because it looks
+    # like output from a run.
+    if [ ! -r "$SH_REPO_DIR/tests/run.sh" ]; then
+        sh_fail "the suite cannot run: this is a network-only checkout with no tests/run.sh; clone the repository to run it"
+        return 2
+    fi
+    sh "$SH_REPO_DIR/tests/run.sh"
+}
 
 case "${1:-help}" in
     doctor)      sh_env_load; sh_doctor || exit 1 ;;

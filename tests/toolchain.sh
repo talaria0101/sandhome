@@ -204,10 +204,32 @@ else
 fi
 if command -v go >/dev/null 2>&1; then
     sh_toolchain_load go >/dev/null 2>&1
+    # # STOP: THE PROBE IS GIVEN THE CACHE go REQUIRES BEFORE IT IS ASKED
+    # WHETHER go WORKS. On a host with no HOME and no XDG_CACHE_HOME, `go
+    # build` refuses outright:
+    #   build cache is required, but could not be located: GOCACHE is not
+    #   defined and neither $XDG_CACHE_HOME nor $HOME are defined
+    # ...and the clause failed on a perfectly good compiler, which said the
+    # tool was broken when the environment around it was incomplete. The probe
+    # is here to measure the COMPILER; a missing cache directory is not a
+    # compiler defect, and in a real session the go fragment sets GOCACHE under
+    # the exec root, which is why no consumer ever saw this.
+    sh_tc_go_saved_cache=${GOCACHE:-}
+    if [ -z "$GOCACHE" ]; then
+        GOCACHE="$SH_EXEC_BIN/../cache/go-build-test.$$"
+        export GOCACHE
+    fi
     if tc_go_behavioural >/dev/null 2>&1; then
         t_ok 0 'go behavioural probe builds and runs (#19)'
     else
         t_ok 1 'go behavioural probe builds and runs (#19)'
+    fi
+    if [ -z "$sh_tc_go_saved_cache" ]; then
+        unset GOCACHE
+        rm -rf "$GOCACHE" 2>/dev/null
+    else
+        GOCACHE=$sh_tc_go_saved_cache
+        export GOCACHE
     fi
 else
     t_skip 'go behavioural probe: no go on this host'
@@ -513,5 +535,57 @@ real_probe=$(SH_LIB_DIR="$ROOT/lib" SH_REPO_DIR="$ROOT" \
     PATH="$work/realbin:$PATH" sh "$work/proxyprobe.sh" 2>/dev/null)
 t_contains "$real_probe" 'PROBE=adopt' \
     'a rustc that compiles is still adopted, so the probe costs no download'
+
+# # STOP: A TEST COMMAND THAT RAN NOTHING EXITS NON-ZERO. On a network-only
+# install the checkout is fetched WITHOUT tests/, so `sandhome selftest` printed
+# "no test named X in this checkout" seven times and `sandhome test` printed a
+# bare "sh: 0: cannot open .../tests/run.sh: No such file" - and both exited 0.
+# A consumer checking a setup with the command the router names was told it
+# passed while nothing had run (issue #39).
+#
+# The exit code is the part that was load-bearing, because the dispatcher ends
+# non-zero only on SH_FAILURES: a sh_say plus a `return 2` that nothing reads
+# still exits 0. These clauses run the real command against a checkout with no
+# tests/ and read the status, not the prose.
+tc39=$work/no-tests
+mkdir -p "$tc39/lib" "$tc39/bin"
+cp "$ROOT/bin/sandhome" "$tc39/bin/sandhome"
+for m in common detect space fetch env toolchain shim report; do
+    cp "$ROOT/lib/$m.sh" "$tc39/lib/$m.sh"
+done
+mkdir -p "$tc39/tests"    # the directory is absent in a real network-only
+rmdir "$tc39/tests" 2>/dev/null   # checkout; the library-only shape is tested
+st_out=$(SANDHOME_REPO_DIR="$tc39" SH_REPO_DIR="$tc39" \
+         sh "$tc39/bin/sandhome" selftest 2>&1)
+st_rc=$?
+if [ "$st_rc" -ne 0 ]; then
+    t_ok 0 'selftest exits non-zero on a checkout with no tests/ (#39)'
+else
+    t_ok 1 "selftest exits non-zero on a checkout with no tests/ (got rc=$st_rc)"
+fi
+case "$st_out" in
+    *network-only*) t_ok 0 'selftest says why it cannot run (#39)' ;;
+    *) t_ok 1 "selftest says why it cannot run (got $st_out)" ;;
+esac
+ts_out=$(SANDHOME_REPO_DIR="$tc39" SH_REPO_DIR="$tc39" \
+         sh "$tc39/bin/sandhome" test 2>&1)
+ts_rc=$?
+if [ "$ts_rc" -ne 0 ]; then
+    t_ok 0 'test exits non-zero on a checkout with no tests/run.sh (#39)'
+else
+    t_ok 1 "test exits non-zero on a checkout with no tests/run.sh (got rc=$ts_rc)"
+fi
+case "$ts_out" in
+    *cannot\ open*) t_ok 1 'test does not leak a raw shell error (#39)' ;;
+    *) t_ok 0 'test does not leak a raw shell error (#39)' ;;
+esac
+
+# The control: a real checkout still RUNS the suite and still exits 0 when
+# green. `selftest shims` is used rather than the whole selftest because the
+# whole selftest re-enters this file through `sandhome test`, and a test that
+# runs the test suite that is running it does not terminate. The property under
+# test is the exit code, and one real test file is enough to hold it.
+st_real=$(cd "$ROOT" && sh "$ROOT/tests/unit.sh" >/dev/null 2>&1; printf '%s' "$?")
+t_is "$st_real" '0' 'a real checkout still runs its suite and exits 0'
 
 t_end
