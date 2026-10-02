@@ -335,6 +335,19 @@ sh_env_body() {
     # and leads; without it a pure-shell encoding walks the path byte by byte and
     # escapes the two characters that would otherwise collide (`/` and `%`), which
     # is injective and needs no tool at all.
+    # STOP: THE REDIRECT IS A STARTUP DEFAULT, NOT THE FINAL ANSWER (issue
+    # #190). On an exec-capable work tree a target dir under the exec root moved
+    # every `target/` out of the project, so the path cargo documents -
+    # `cargo build` then `./target/debug/<bin>` - was ENOENT. env.sh cannot
+    # decide this without RUNNING a file in the current directory, and a shell
+    # startup that writes a probe into whatever directory the user happens to be
+    # in is a worse side effect than the one it fixes (a file watcher, or a
+    # read-only checkout, would see it). The per-invocation cargo wrapper
+    # therefore makes the call at the moment cargo is run: it probes exec in the
+    # project directory and drops this default there when the project can run a
+    # file, leaving the project-local target/ in place. A caller who set
+    # CARGO_TARGET_DIR is untouched, and the wrapper still re-derives for the
+    # project it runs in when this default is stale (#176).
     printf 'if [ -z "${CARGO_TARGET_DIR:-}" ]; then\n'
     printf '  _sh_ctd_p=$PWD\n'
     printf '  _sh_ctd_d=$_sh_ctd_p\n'
@@ -942,6 +955,13 @@ sh_install_profile() {
     chmod 0644 "$SH_HOME/profile.sh" 2>/dev/null || true
     sh_step "installed $SH_HOME/profile.sh"
     sh_pl_line=$(sh_profile_source_line)
+    # A NARROW PREFIX, SO A HAND-WRITTEN LINE IS NEVER TAKEN FOR OURS (issue
+    # #188). This call used the two-argument form, which matches the FIRST line
+    # equal to the fragment line anywhere in the file and works; the PATH line
+    # below used `export PATH="` as a prefix, which matches every line in the
+    # file that starts an export PATH and DROPS all but the first - the user's
+    # own PATH entries among them. That is the defect; this call is already
+    # scoped to the exact line sh_profile_source_line writes.
     sh_append_login "$sh_pl_line" "$SH_HOME/profile.sh"
     sh_append_rc "$sh_pl_line" "$SH_HOME/profile.sh"
     return 0
@@ -1723,6 +1743,28 @@ sh_global_skip_entry() {
     if [ -n "${SH_EXEC:-}" ]; then
         case "$1" in
             "$SH_EXEC"/views|"$SH_EXEC"/views/*) return 0 ;;
+        esac
+    fi
+    # # STOP: A TOOLCHAIN-INTERNAL bin UNDER THE HOME IS THE SAME KIND OF
+    # INDIRECTION (issue #195). The rust fragment prepends
+    # $SANDHOME_HOME/toolchains/rust/cargo/bin ahead of the exec bin, so after
+    # sh_env_load that directory is on PATH, writable and exec-capable and looks
+    # like the best hook candidate on the machine. The hook was written into it
+    # and the report read global=on:<...>/toolchains/rust/cargo/bin, which passes
+    # the report's own probe (it puts the recorded directory on PATH) and serves
+    # NOBODY: a non-login shell with the host PATH cannot reach the directory at
+    # all, so every tool the hook advertised was invisible in exactly the shell
+    # the hook exists for. Measured after a full setup:
+    #   env -i PATH=/usr/local/bin:/usr/bin:/bin sh -c 'command -v deno' -> NOT FOUND
+    # Every module may prepend its own bin under the toolchain root, and the
+    # root is this tree's own store, not a PATH entry a consumer had before
+    # setup, so the whole $SH_HOME/toolchains tree is refused. A neutral
+    # directory under the HOME that this tree did not create is still a
+    # candidate, which is the control that this must not become "everything
+    # under HOME is a skip" (tests/global.sh keeps that case).
+    if [ -n "${SH_HOME:-}" ]; then
+        case "$1" in
+            "$SH_HOME"/toolchains|"$SH_HOME"/toolchains/*) return 0 ;;
         esac
     fi
     sh_global_is_sandbox "$1" && return 0

@@ -462,7 +462,7 @@ sh_toolchain_install_one() {
         sh_toolchain_preflight "$sh_te_name" || return 1
         sh_say "toolchain $sh_te_name: forced, installing into $SH_HOME_TOOLCHAINS/$sh_te_name"
         if ! "tc_${sh_te_name}_install"; then
-            sh_fail "toolchain $sh_te_name could not be installed"
+            sh_fail "toolchain $sh_te_name could not be installed; drop it with 'sandhome install --without $sh_te_name', or retry with 'sandhome install --force $sh_te_name'"
             return 1
         fi
         INSTALLED="$INSTALLED $sh_te_name"
@@ -503,7 +503,7 @@ sh_toolchain_install_one() {
         sh_toolchain_preflight "$sh_te_name" || return 1
         sh_say "toolchain $sh_te_name: not present; installing into $SH_HOME_TOOLCHAINS/$sh_te_name"
         if ! "tc_${sh_te_name}_install"; then
-            sh_fail "toolchain $sh_te_name could not be installed"
+            sh_fail "toolchain $sh_te_name could not be installed; drop it with 'sandhome install --without $sh_te_name', or retry with 'sandhome install --force $sh_te_name'"
             return 1
         fi
         INSTALLED="$INSTALLED $sh_te_name"

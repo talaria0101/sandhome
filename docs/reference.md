@@ -211,7 +211,7 @@ usage: sh bootstrap.sh [options]
 | `cli` | jq ripgrep fd |
 | `developer` | jq ripgrep fd python node |
 | `languages` | jq ripgrep fd python node rust go zig deno bun mold clang cmake meson ninja pkgconf perl |
-| `agent` | jq ripgrep fd python node rust go zig deno bun mold clang cmake meson ninja pkgconf perl |
+| `agent` | jq ripgrep fd python node deno bun yq gh shellcheck shfmt qemuuser mold ninja pkgconf perl |
 | `project` | jq ripgrep fd python node go rust clang cmake meson ninja mold pkgconf perl |
 
 ## Environment variables
@@ -240,6 +240,7 @@ usage: sh bootstrap.sh [options]
 | `SANDHOME_HERE` | profile.sh | `unset, and the feature is off until it is set` |
 | `SANDHOME_HOME` | env.sh profile.sh space.sh bootstrap.sh sandhome emscripten.sh go.sh node.sh python.sh rust.sh | `$SH_BAKED_HOME` |
 | `SANDHOME_LLVM_TAG` | clang.sh | `unset, and the feature is off until it is set` |
+| `SANDHOME_LOGIN` | bootstrap.sh | `0` |
 | `SANDHOME_LOW_EXEC_MB` | space.sh sandhome | `unset, and the feature is off until it is set` |
 | `SANDHOME_LOW_EXEC_PCT` | space.sh sandhome | `unset, and the feature is off until it is set` |
 | `SANDHOME_MESON_LIB` | meson.sh | `unset, and the feature is off until it is set` |

@@ -370,7 +370,20 @@ sh_toolset_names() {
         # drive them. The build tools are small beside the compilers, so they
         # ride with both compiler toolsets as well as with project.
         languages) printf 'jq ripgrep fd python node rust go zig deno bun mold clang cmake meson ninja pkgconf perl\n' ;;
-        agent)     printf 'jq ripgrep fd python node rust go zig deno bun mold clang cmake meson ninja pkgconf perl\n' ;;
+        # agent IS NOT A SYNONYM FOR languages (issue #194). It was written as
+        # the same line, so the name promised a modest step up from developer
+        # and delivered the whole compiler set - including clang, a >1GB
+        # download and ~16GB on the home root - for a caller who never asked to
+        # build C++. An agent at work wants the RUNTIMES and the CLI/analysis
+        # tools it actually runs, not a source-build chain: deno and bun beside
+        # node, yq for structured data, shellcheck and shfmt for the shell it
+        # writes, gh for the forge, and qemu-user for a foreign-arch artifact.
+        # The small build pieces (mold, ninja, pkgconf, perl) ride along so a
+        # configure step still works, but the multi-gigabyte compilers
+        # (rust, go, zig, clang, cmake, meson) are named only by languages,
+        # project, or an explicit --with. A caller who wants the compilers asks
+        # for them, and a caller who asked for agent gets what the name says.
+        agent)     printf 'jq ripgrep fd python node deno bun yq gh shellcheck shfmt qemuuser mold ninja pkgconf perl\n' ;;
         # The union a from-source C/C++ build needs, in one command, so an agent
         # that pasted a CMake or meson project does not hand-assemble the list
         # before the first configure (issue #123). meson pulls python through its
@@ -698,12 +711,20 @@ sh_bootstrap_path_line() {
     if [ "$SH_PATH_LINE" = none ] || [ "$SH_DRY_RUN" = 1 ]; then
         return 0
     fi
-    sh_bpl_line="export PATH=\"$SH_EXEC_BIN:\$PATH\""
+    # THE MARKER IS WHAT MAKES THIS SAFE (issue #188). The line carries a
+    # trailing comment naming this tree, and sh_append_once only replaces a line
+    # that both starts `export PATH="` and carries the mark. A hand-written
+    # PATH export shares the prefix but never the mark, so it is left byte for
+    # byte - measured before the fix: a ~/.profile with two of the user's own
+    # PATH exports came out with one, replaced by this one.
+    sh_bpl_mark='# sandhome'
+    sh_bpl_line="export PATH=\"$SH_EXEC_BIN:\$PATH\" $sh_bpl_mark"
     # The prefix is what makes this line replaceable: without it a re-run that
     # moves the exec root appends a second PATH block and leaves the superseded
-    # root first on PATH, where it still wins (issue #41).
-    sh_append_login "$sh_bpl_line" "$SH_EXEC_BIN" 'export PATH="'
-    sh_append_rc "$sh_bpl_line" "$SH_EXEC_BIN" 'export PATH="'
+    # root first on PATH, where it still wins (issue #41). The mark narrows it
+    # to a line this tree wrote, so no other export is touched.
+    sh_append_login "$sh_bpl_line" "$SH_EXEC_BIN" 'export PATH="' "$sh_bpl_mark"
+    sh_append_rc "$sh_bpl_line" "$SH_EXEC_BIN" 'export PATH="' "$sh_bpl_mark"
     return 0
 }
 
@@ -964,6 +985,61 @@ sandhome_bootstrap_main() {
     sh_exec_install_launchers || true
     sh_env_write
     sh_env_load
+    # # STOP: A THROWAWAY ROOT MUST NOT REWRITE THE CALLER'S LOGIN FILES (issue
+    # #192). --home and --exec exist to put the sandbox somewhere other than the
+    # default, and a run that names them was still appending a PATH line and a
+    # profile-source line to $HOME/.profile. When the throwaway root is removed,
+    # the user's login shell is left prepending a dead exec bin and sourcing a
+    # dead fragment - a login change the caller never asked for. The rule:
+    # a run that names either root is isolated and touches no login file unless
+    # the caller also asks for it with SANDHOME_LOGIN=1 (or --login). The
+    # default run, and any run with no --home/--exec, is unchanged.
+    #
+    # # STOP: THE GLOBAL HOOK IS A PATH CHANGE TOO, AND IT WAS LEFT ON (issue
+    # #196). Disabling the profile and the PATH line was the whole of the first
+    # fix, but sh_bootstrap_install_global still ran, so a named-root run wrote
+    # .sandhome-dispatch and a baked `sandhome` into the FIRST writable
+    # directory on the caller's real PATH (measured: $HOME/.local/bin), with the
+    # dispatcher carrying the throwaway exec root. Removing the root left a dead
+    # hook in every new shell - the same harm as the dead profile line, one
+    # directory over. A named root is isolated, so the hook is skipped with the
+    # login files unless SANDHOME_LOGIN=1 asks for the whole login change.
+    if [ -n "$SH_HOME_ARG" ] || [ -n "$SH_EXEC_ARG" ]; then
+        : "${SANDHOME_LOGIN:=0}"
+        case "$SANDHOME_LOGIN" in
+            1|yes|on|true) : ;;
+            *)
+                case "$SH_PROFILE" in
+                    none) : ;;
+                    *) sh_say 'named --home/--exec: leaving the login files alone (set SANDHOME_LOGIN=1 to install them)' ;;
+                esac
+                SH_PROFILE=none
+                SH_PATH_LINE=none
+                ;;
+        esac
+        # # STOP: THE GLOBAL HOOK IS OUTSIDE THE NAMED ROOT, AND IT IS STILL
+        # INSTALLED (issue #196). The #192 isolation covers the login FILES;
+        # the hook is independent, and tests/global.sh and tests/consumer.sh
+        # rely on a named --exec run installing it (SANDHOME_GLOBAL=install is
+        # also an explicit ask, so it must be honoured). What was missing is a
+        # word: the run writes .sandhome-dispatch into a directory on the
+        # caller's real PATH, bakes the named exec root into it, and REPOINTS a
+        # previous working hook at that root. When the named root is a
+        # throwaway, removing it leaves a dead hook in every new shell - the
+        # same harm as the dead profile line, one directory over - and nothing
+        # in the output says `--no-global` is the way to avoid it. The warning
+        # is the fix; the behaviour stays, because forbidding it would break
+        # the caller who named a persistent root and asked for the hook.
+        case "${SH_GLOBAL:-install}" in
+            none) : ;;
+            *)
+                case "$SANDHOME_LOGIN" in
+                    1|yes|on|true) : ;;
+                    *) sh_say 'named --home/--exec: the global hook is still installed and will point at the named exec root; pass --no-global (or SANDHOME_GLOBAL=none) to leave the caller PATH alone' ;;
+                esac
+                ;;
+        esac
+    fi
     sh_bootstrap_path_line
     sh_bootstrap_install_profile || true
     sh_bootstrap_install_global || true

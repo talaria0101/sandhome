@@ -735,8 +735,20 @@ sh_doctor() {
             # for it wants clang.
             [ "$sh_doc_wanted" = yes ] || continue
             sh_doc_version=$(sh_toolchain_version "$sh_doc_t")
-            sh_doctor_check "toolchain_$sh_doc_t" \
-                "$([ -n "$sh_doc_version" ] && printf yes || printf no)" yes
+            # # STOP: A TOOLCHAIN THAT IS WANTED AND MISSING NAMES THE COMMAND
+            # THAT CLEARS THE FAILURE (issue #191). A failed --only yq install
+            # leaves yq in SANDHOME_WANTED_TOOLCHAINS, so doctor and status are
+            # red on every later run and nothing in the output says how to get a
+            # green sandbox back. The one command that does is
+            # `sandhome install --without NAME`, which drops it from the request
+            # and records only; the other is a forced reinstall of it.
+            if [ -n "$sh_doc_version" ]; then
+                sh_doctor_check "toolchain_$sh_doc_t" yes yes
+            else
+                sh_doctor_check "toolchain_$sh_doc_t" \
+                    "no (drop it: sandhome install --without $sh_doc_t; retry: sandhome install --force $sh_doc_t)" \
+                    yes
+            fi
             # # STOP: A TOOLCHAIN CAN ANSWER A VERSION AND STILL BE UNUSABLE. A
             # launcher-view node prints `node --version` and then fails every
             # spawn, because process.execPath is an anonymous memfd: Playwright,

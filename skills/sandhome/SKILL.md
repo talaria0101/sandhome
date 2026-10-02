@@ -66,7 +66,13 @@ exec root, `sandhome resume` rebuilds every recorded view without fetching
 and exits with doctor's code.
 
 Toolsets: `minimal` (jq), `cli` (+ ripgrep, fd), `developer` (+ python, node;
-the default), `languages` and `agent` (both + rust, go). Add one with
+the default); `languages` is the full compiler set (`developer` plus
+`rust go zig deno bun mold clang cmake meson ninja pkgconf perl`; clang alone is
+a >1GB download); `project` is `developer` plus `go rust clang cmake
+meson ninja mold pkgconf perl`; `agent` is `developer` plus the runtimes and
+CLIs an agent uses at work (`deno bun yq gh shellcheck shfmt qemuuser mold ninja
+pkgconf perl`) and carries no compiler chain (work-tree detection can still
+fold one in; `--no-detect` turns it off). Add one with
 `--with rust`, drop one with `--without node`; both flags repeat and both take a
 comma list. `--only rust` (space or comma separated) asks for exactly that list
 with no preset and no auto-detection; it is `--toolset none --with rust`, and an

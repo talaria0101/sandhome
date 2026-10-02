@@ -174,20 +174,25 @@ The six toolsets, and the difference between them is the compilers:
 | `developer` | `jq ripgrep fd python node` | 286 |
 | `project` | `developer` plus `go rust clang cmake meson ninja mold pkgconf perl` | 3766 |
 | `languages` | `developer` plus `rust go zig deno bun mold clang cmake meson ninja pkgconf perl` | 4316 |
-| `agent` | the same as `languages` | 4316 |
+| `agent` | `developer` plus `deno bun yq gh shellcheck shfmt qemuuser mold ninja pkgconf perl` | 772 |
 
 The sums are the declared copy-mode figures added up; launch mode costs less
 per the per-toolchain table in `docs/architecture.md`, which owns every
 figure here. `--dry-run` prices the actual request against the actual root
 before spending anything.
 
-`clang` is in `project`, `languages` and `agent`, and is asked for by name otherwise:
+`clang` is in `project` and `languages`, and is asked for by name otherwise:
 `sandhome install clang` or `bootstrap.sh --with clang`. Its download is above
 1GB and its tree wants ~16GB on the home root; in launch mode its exec view
-is launcher copies, so a small exec root holds it. `cmake`, `meson`, `pkgconf`
-and `perl` ride with the same three toolsets and are folded in by work-tree
-detection (`CMakeLists.txt`, `meson.build`, `configure.ac`) on any toolset, so
-a C/C++ checkout configures without hand-assembling the chain. A toolchain already on
+is launcher copies, so a small exec root holds it. `agent` deliberately does
+NOT carry clang, rust or zig: it is the runtime-and-CLI set an agent uses at
+work, so the preset itself never pays for a compiler chain. Work-tree detection
+can still fold one in (a `Cargo.toml`, `CMakeLists.txt` or `meson.build` in the
+current tree), and `--no-detect` turns that off. `cmake`, `meson`,
+`pkgconf` and `perl` ride with `project` and `languages`, and the C/C++ build
+chain is folded in by work-tree detection (`CMakeLists.txt`, `meson.build`,
+`configure.ac`) on any toolset, so a C/C++ checkout configures without
+hand-assembling the chain. A toolchain already on
 `PATH` is adopted, not downloaded; `SANDHOME_FORCE=1` (or a comma list of
 names, or `sandhome install --force NAME`) installs locally regardless.
 
@@ -230,6 +235,15 @@ a **symlink into the exec root**: the kernel resolves the link and permits
 mount. Installation records each directory, how the dispatcher got there, and
 what was there before, then verifies the result: every recorded directory is
 run through a fresh `env -i` shell that has to print its marker back.
+
+A run that names `--home`/`--exec` is isolated for the **login files**: it does
+not touch `~/.profile` or the shell rc files unless `SANDHOME_LOGIN=1` asks.
+**The global hook is not part of that isolation.** It is still installed (unless
+`SANDHOME_GLOBAL=none` or `--no-global`), into a directory on the caller's real
+`PATH`, and it bakes the named exec root. A throwaway root run with the hook left
+on therefore repoints any previous hook at a root that will be removed, and
+removing the root leaves a dead hook in every new shell. Name a persistent root,
+or pass `--no-global` for a throwaway one.
 `sandhome report` prints `global=on:<dir>` when a recorded directory answers
 that shell, `global=stale:<dir>` when one was recorded and no longer does
 (`doctor` fails on it and names the repair),`global=inside-exec-root:<dir>` when the hook was written into a directory this
@@ -492,8 +506,8 @@ target list is not a link promise, `sandhome doctor` prints
 `tools/emscripten.sh` installs the toolchain that gate names.
 
 `--with clang` is the one toolchain not in a toolset, because its view is large
-(hundreds of MB) and it wants a roomy exec root; `zig`, `deno`, `bun` and `mold`
-are in the `languages` and `agent` toolsets.
+(hundreds of MB) and it wants a roomy exec root; `deno`, `bun` and `mold` are in
+the `languages` and `agent` toolsets, and `zig` is in `languages` only.
 
 ### qemu-user, shellcheck, and the long tail
 

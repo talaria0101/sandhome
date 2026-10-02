@@ -264,9 +264,9 @@ esac
 # unaffected because it finds its LLVM through EM_CONFIG (LLVM_ROOT), not PATH.
 #
 # THE EMPTY-PATH FORM IS THE POINT, AND NOT A COSMETIC ONE. An append written
-# as PATH="$PATH:$dir" on a shell whose PATH is EMPTY produces ":$dir", and an
+# as PATH="\$PATH:\$dir" on a shell whose PATH is EMPTY produces ":\$dir", and an
 # empty PATH element means the CURRENT DIRECTORY on every POSIX shell. Measured:
-#   dash -c 'unset PATH; PATH="$PATH:/x"; case ":$PATH:" in *::*) echo HAZARD;; esac'
+#   dash -c 'unset PATH; PATH="\$PATH:/x"; case ":\$PATH:" in *::*) echo HAZARD;; esac'
 #   HAZARD
 # The prepended form had the same shape in reverse but could not produce a
 # LEADING colon, so the change to append would have introduced this hazard

@@ -733,8 +733,9 @@ sh_space_status() {
 # that there is still time to act on it.
 #
 # # STOP: IT SAYS IT ONCE PER PROCESS. Every toolchain that installs writes a
-# fragment, and each write calls this, so a `--toolset agent` run on a low root
-# produced five identical lines - measured, and the same line five times over.
+# fragment, and each write calls this, so a multi-toolchain run on a low root
+# (the count depends on the toolset, so it is not named here) produced the same
+# line once per fragment - measured, and the same line over and over.
 # A repeated warning is not a louder warning, it is noise that trains the reader
 # to scroll past the one line that mattered. The state is cached per process and
 # the second caller is silent; a new process, and therefore a new command, says

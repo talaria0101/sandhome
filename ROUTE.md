@@ -167,8 +167,14 @@ exec-capable path. `sandhome space --probe` lists every candidate with its free
 space.
 
 Toolsets: `minimal` (jq), `cli` (plus ripgrep and fd), `developer` (plus
-python and node, the default), `languages` and `agent` (both plus rust and
-go). Add one with `--with rust`, drop one with `--without node`. Both flags
+python and node, the default); `languages` is the full compiler set
+(`developer` plus `rust go zig deno bun mold clang cmake meson ninja pkgconf
+perl`, and clang alone is a >1GB download); `project` is `developer` plus
+`go rust clang cmake meson ninja mold pkgconf perl`; `agent` is `developer`
+plus the runtimes and CLIs an agent uses at work (`deno bun yq gh shellcheck
+shfmt qemuuser mold ninja pkgconf perl`) and carries no compiler chain
+(work-tree detection can still fold one in; `--no-detect` turns it off). Add one
+with `--with rust`, drop one with `--without node`. Both flags
 repeat and both take a comma list. Ask for exactly a list, with no preset and
 no auto-detection, with `--only rust` (space or comma separated: `--only jq
 ripgrep`); it is the same request as `--toolset none --with rust`. An explicit

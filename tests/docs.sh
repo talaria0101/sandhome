@@ -828,6 +828,32 @@ for ts_name in minimal cli developer project languages agent; do
     done
 done
 t_is "$ts_bad" '' 'every toolchain in every toolset is named in the guide'
+# # STOP: THE GUIDE'S "DECLARED SUM" COLUMN IS ARITHMETIC, AND NOBODY ADDED IT
+# UP. #194 removed clang/zig/rust/go/cmake/meson from `agent` and wrote 760 for
+# its row; the architecture figures for the tools agent does carry add to 772.
+# A sum nobody recomputes rots exactly like the names above, so this guard adds
+# the architecture table up per toolset and requires the guide's number to be
+# that sum. It is computed here, not compared to a second hand-written table.
+ts_sum_bad=''
+for ts_name in minimal cli developer project languages agent; do
+    ts_line=$(printf '%s\n' "$ts_body" | sed -n "s/^ *$ts_name) *printf '\([^']*\)'.*/\1/p" |
+              tr '\\' ' ')
+    ts_sum=0
+    for ts_tool in $ts_line; do
+        # The trailing \n of the printf string becomes a lone `n` here; it is
+        # not a toolchain and must not be looked up.
+        [ "$ts_tool" = n ] && continue
+        ts_mb=$(sed -n "s/^| $ts_tool | \([0-9][0-9]*\) |.*/\1/p" \
+                    "$ROOT/docs/architecture.md" 2>/dev/null | head -1)
+        [ -n "$ts_mb" ] || continue
+        ts_sum=$((ts_sum + ts_mb))
+    done
+    ts_claim=$(grep -E "^\| .$ts_name. \|" "$ROOT/docs/guide.md" 2>/dev/null |
+               sed -n 's/.*| \([0-9][0-9]*\) |$/\1/p' | head -1)
+    [ -n "$ts_claim" ] || ts_claim=missing
+    [ "$ts_claim" = "$ts_sum" ] || ts_sum_bad="$ts_sum_bad $ts_name:guide=$ts_claim:architecture=$ts_sum"
+done
+t_is "$ts_sum_bad" '' 'the guide toolset sums equal the architecture figures'
 # The reverse: clang is deliberately in no toolset, and the guide must say so
 # rather than let a consumer assume `languages` includes it.
 if grep -q 'FAKEPTY_SIZE' "$ROOT/docs/guide.md" 2>/dev/null; then
@@ -862,13 +888,36 @@ else
 fi
 # clang rides with the build toolsets, and the guide must say so rather than let
 # a consumer assume `languages` is compilers only. The old rule (clang in no
-# toolset) rotted when project shipped it; the new rule is that project,
-# languages and agent all carry the from-source chain, and the guide names it.
-if grep -q 'clang.*project.*languages.*agent\|languages.*clang\|project.*clang' "$ROOT/docs/guide.md" 2>/dev/null; then
+# toolset) rotted when project shipped it. `agent` deliberately does NOT carry
+# clang (issue #194), so the clause names the two toolsets that do.
+if grep -q 'clang.*project.*languages\|languages.*clang\|project.*clang' "$ROOT/docs/guide.md" 2>/dev/null; then
     t_ok 0 'the guide names clang in the build toolsets'
 else
     t_ok 1 'the guide names clang in the build toolsets'
 fi
+# # STOP: agent IS NOT A SYNONYM FOR languages (issue #194). The two presets
+# were the same line, so `--toolset agent` downloaded clang (>1GB) for a caller
+# who never asked to build C++. The clause compares the two expansions FROM THE
+# CODE and asserts agent carries no multi-gigabyte compiler, so the alias cannot
+# return without failing here.
+ts_agent=$(printf '%s\n' "$ts_body" | sed -n "s/^ *agent) *printf '\([^']*\)'.*/\1/p" | tr '\\' ' ')
+ts_lang=$(printf '%s\n' "$ts_body" | sed -n "s/^ *languages) *printf '\([^']*\)'.*/\1/p" | tr '\\' ' ')
+t_ok "$([ "$ts_agent" != "$ts_lang" ] && echo 0 || echo 1)" \
+    'agent is not a byte-identical copy of languages (#194)'
+for ts_heavy in clang zig rust go cmake meson; do
+    case " $ts_agent " in
+        *" $ts_heavy "*) ts_bad="$ts_bad agent-carries-$ts_heavy" ;;
+    esac
+done
+t_is "$ts_bad" '' 'agent carries none of the multi-gigabyte compilers (#194)'
+# And the shell/analysis tools the name promises really are there.
+for ts_light in deno bun yq shellcheck shfmt; do
+    case " $ts_agent " in
+        *" $ts_light "*) : ;;
+        *) ts_bad="$ts_bad agent-missing-$ts_light" ;;
+    esac
+done
+t_is "$ts_bad" '' 'agent carries the runtimes and CLIs it is named for (#194)'
 # # STOP: THE GENERATED errandsh TABLE AND THE HAND-WRITTEN SKILL TABLE MUST
 # AGREE. The reference published `(unset)` for all five errandsh variables
 # because the generator's pattern needed an `=` straight after the name and the

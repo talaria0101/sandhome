@@ -39,7 +39,13 @@ report says `global=none`; then source the entry point beside the home, once per
 shell: `. "${XDG_DATA_HOME:-$HOME/.local/share}/sandhome/entry.sh"`.
 
 Toolsets: `minimal` (jq), `cli` (+ ripgrep, fd), `developer` (+ python, node,
-the default), `languages` and `agent` (both + rust, go). `--with rust` adds one,
+the default); `languages` is the full compiler set (`developer` plus
+`rust go zig deno bun mold clang cmake meson ninja pkgconf perl`; clang alone is
+a >1GB download); `project` is `developer` plus `go rust clang cmake meson ninja
+mold pkgconf perl`; `agent` is `developer` plus the runtimes and CLIs an agent
+uses at work (`deno bun yq gh shellcheck shfmt qemuuser mold ninja pkgconf perl`)
+and carries no compiler chain; work-tree detection can still fold one in for a
+C/C++ or Rust checkout, and `--no-detect` turns that off. `--with rust` adds one,
 `--without node` drops one; both flags repeat. `--only rust` asks for exactly
 that list with no preset and no auto-detection (it is `--toolset none --with
 rust`); an explicit request never auto-detects, and `--detect` opts back in.

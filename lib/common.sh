@@ -636,6 +636,13 @@ sh_json_escape() {
 # a different exec root is a different line, so moving the root left every
 # previous block in place.
 #
+# sh_append_once FILE PREFIX LINE MARK -> the same as the three-argument form,
+# but a line is only treated as ours when it ALSO carries MARK. This is what the
+# bootstrap PATH line uses: its prefix (`export PATH="`) matches a line any
+# human writes, and without the marker the setup rewrote the user's own PATH
+# exports (issue #188). The marker is a trailing comment, so the written line
+# stays valid and stays recognisably this tree's.
+#
 #   # Added by bootstrap.
 #   export PATH="/dev/shm/bin:$PATH"
 #   # Added by bootstrap.
@@ -651,25 +658,62 @@ sh_json_escape() {
 sh_append_once() {
     sh_ao_file=$1
     sh_ao_prefix=''
-    # The three-argument form is chosen by the ARGUMENT COUNT, not by comparing
-    # $2 with $3. Comparing them looks equivalent and is not: called with two
-    # arguments, $3 is empty, so "$2" != "$3" is TRUE, and a check written that
-    # way either shifts when it should not or - as it did here - skips the shift
-    # and then reads the line out of $1, which is the file name. Every two-arg
-    # call silently wrote an empty line. `[ $# -ge 3 ]` is the whole test.
-    if [ "$#" -ge 3 ]; then
+    # THREE FORMS, CHOSEN BY ARGUMENT COUNT (issue #188):
+    #   2 args  FILE LINE          - replace the exact line, or append it
+    #   3 args  FILE PREFIX LINE   - replace only lines that START with PREFIX
+    #   4 args  FILE PREFIX LINE M - same, but replace only a line that matches
+    #                                PREFIX and ALSO carries the marker M, so a
+    #                                hand-written line that merely shares the
+    #                                prefix is left alone. The bootstrap's PATH
+    #                                line uses this form: a plain export PATH=
+    #                                prefix matched the user's own PATH exports
+    #                                and rewrote them.
+    # The marker is a trailing comment on the line this tree writes, so the
+    # line stays valid in the login file and is recognisably ours.
+    sh_ao_mark=''
+    # THE FOUR-ARGUMENT FORM IS FILE PREFIX LINE MARK, matching the order the
+    # two- and three-argument forms already use (file, then prefix, then line).
+    # A first cut declared it FILE PREFIX MARK LINE in the comment and then read
+    # $3 as the mark while the callers passed the line there, so the body wrote
+    # a bare `# sandhome` into ~/.profile. Read the mark from the LAST argument
+    # and the line from the one before it, whatever the count, so there is only
+    # one order and no comment can disagree with it.
+    if [ "$#" -ge 4 ]; then
+        sh_ao_mark=$4
+        sh_ao_line=$3
         sh_ao_prefix=$2
-        shift 2
-    fi
-    # After the shift the line is $1 in both forms: three arguments shift the file
-    # and the prefix away, and two arguments shift nothing, so $1 must be the
-    # FILE and $2 the line - which is why the assignment below is the two
-    # argument case's job, not an afterthought.
-    if [ "$#" -ge 2 ]; then
-        sh_ao_line=$2
+    elif [ "$#" -ge 3 ]; then
+        # The three-argument form is chosen by the ARGUMENT COUNT, not by
+        # comparing $2 with $3. Comparing them looks equivalent and is not:
+        # called with two arguments, $3 is empty, so "$2" != "$3" is TRUE, and a
+        # check written that way either shifts when it should not or - as it did
+        # here - skips the shift and then reads the line out of $1, which is the
+        # file name. Every two-arg call silently wrote an empty line.
+        sh_ao_prefix=$2
+        sh_ao_line=$3
     else
-        sh_ao_line=$1
+        sh_ao_line=$2
     fi
+    # (the positional forms are resolved above, so no shift is needed here)
+    # sh_ao_match LINE -> 0 when LINE is one of OURS: it starts with the prefix
+    # AND, when a marker was given, carries it. A hand-written `export PATH=...`
+    # never carries the marker, so it is not taken for this tree's line and is
+    # never rewritten or dropped (issue #188). Defined here (POSIX sh has no
+    # locals); it is redefined on every call and reads the prefix/mark this call
+    # set, so no stale copy can be consulted.
+    sh_ao_match() {
+        case "$1" in
+            "$sh_ao_prefix"*) ;;
+            *) return 1 ;;
+        esac
+        if [ -n "$sh_ao_mark" ]; then
+            case "$1" in
+                *"$sh_ao_mark"*) return 0 ;;
+                *) return 1 ;;
+            esac
+        fi
+        return 0
+    }
     sh_ao_tmp=""
     SH_ADDED=0
     : >> "$sh_ao_file"
@@ -693,15 +737,12 @@ sh_append_once() {
         sh_ao_seen=0
         sh_ao_body=''
         while IFS= read -r sh_ao_existing; do
-            case "$sh_ao_existing" in
-                "$sh_ao_prefix"*)
-                    if [ "$sh_ao_seen" = 0 ]; then
-                        sh_ao_body=$sh_ao_existing
-                        sh_ao_seen=1
-                    fi
-                    ;;
-                *) : ;;
-            esac
+            if sh_ao_match "$sh_ao_existing"; then
+                if [ "$sh_ao_seen" = 0 ]; then
+                    sh_ao_body=$sh_ao_existing
+                    sh_ao_seen=1
+                fi
+            fi
         done < "$sh_ao_file"
         if [ "$sh_ao_seen" = 0 ]; then
             printf '\n# Added by %s.\n%s\n' "$SH_SELF" "$sh_ao_line" >> "$sh_ao_file"
@@ -725,17 +766,14 @@ sh_append_once() {
         # write-through the noclobber open was there to refuse.
         sh_ao_wrote=0
         while IFS= read -r sh_ao_existing; do
-            case "$sh_ao_existing" in
-                "$sh_ao_prefix"*)
-                    if [ "$sh_ao_wrote" = 0 ]; then
-                        printf '%s\n' "$sh_ao_line" >> "$sh_ao_tmp"
-                        sh_ao_wrote=1
-                    fi
-                    ;;
-                *)
-                    printf '%s\n' "$sh_ao_existing" >> "$sh_ao_tmp"
-                    ;;
-            esac
+            if sh_ao_match "$sh_ao_existing"; then
+                if [ "$sh_ao_wrote" = 0 ]; then
+                    printf '%s\n' "$sh_ao_line" >> "$sh_ao_tmp"
+                    sh_ao_wrote=1
+                fi
+            else
+                printf '%s\n' "$sh_ao_existing" >> "$sh_ao_tmp"
+            fi
         done < "$sh_ao_file"
         mv -f "$sh_ao_tmp" "$sh_ao_file" 2>/dev/null || {
             rm -f "$sh_ao_tmp" 2>/dev/null
@@ -763,8 +801,13 @@ sh_append_login() {
     sh_al_line=$1
     sh_al_what=$2
     sh_al_prefix=${3:-}
+    sh_al_mark=${4:-}
     if [ -n "$sh_al_prefix" ]; then
-        sh_append_once "$HOME/.profile" "$sh_al_prefix" "$sh_al_line"
+        if [ -n "$sh_al_mark" ]; then
+            sh_append_once "$HOME/.profile" "$sh_al_prefix" "$sh_al_line" "$sh_al_mark"
+        else
+            sh_append_once "$HOME/.profile" "$sh_al_prefix" "$sh_al_line"
+        fi
     else
         sh_append_once "$HOME/.profile" "$sh_al_line"
     fi
@@ -774,7 +817,11 @@ sh_append_login() {
     for sh_al_file in "$HOME/.bash_profile" "$HOME/.bash_login"; do
         if [ -f "$sh_al_file" ]; then
             if [ -n "$sh_al_prefix" ]; then
-                sh_append_once "$sh_al_file" "$sh_al_prefix" "$sh_al_line"
+                if [ -n "$sh_al_mark" ]; then
+                    sh_append_once "$sh_al_file" "$sh_al_prefix" "$sh_al_line" "$sh_al_mark"
+                else
+                    sh_append_once "$sh_al_file" "$sh_al_prefix" "$sh_al_line"
+                fi
             else
                 sh_append_once "$sh_al_file" "$sh_al_line"
             fi
@@ -791,10 +838,15 @@ sh_append_rc() {
     sh_ar_line=$1
     sh_ar_what=$2
     sh_ar_prefix=${3:-}
+    sh_ar_mark=${4:-}
     for sh_ar_file in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.kshrc"; do
         if [ -f "$sh_ar_file" ]; then
             if [ -n "$sh_ar_prefix" ]; then
-                sh_append_once "$sh_ar_file" "$sh_ar_prefix" "$sh_ar_line"
+                if [ -n "$sh_ar_mark" ]; then
+                    sh_append_once "$sh_ar_file" "$sh_ar_prefix" "$sh_ar_line" "$sh_ar_mark"
+                else
+                    sh_append_once "$sh_ar_file" "$sh_ar_prefix" "$sh_ar_line"
+                fi
             else
                 sh_append_once "$sh_ar_file" "$sh_ar_line"
             fi
