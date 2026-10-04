@@ -46,6 +46,18 @@ esac
 
 t_begin bootstrap
 
+# STOP: THE CALLER'S XDG_* DIRECTORIES ARE NOT OURS. In this sandbox the
+# harness hands us XDG_CACHE_HOME=/state/kage and friends, all on a noexec
+# mount, and the end-to-end below runs a real bootstrap and a real `sandhome
+# doctor` with that environment. doctor's cache_dir_exec gate then truthfully
+# reports `FAIL ... cache_dir_exec=no` and six sound-home clauses go red for a
+# host fact that is not the tree's (the gate is CORRECT; the isolation is
+# missing). Scrub them at the top so a sound home gates green regardless of
+# what the caller's environment leaked in. env.sh still has to declare
+# XDG_CACHE_HOME, which is why doctor's declaration check passes fixtures when
+# the environment does not set the variable.
+unset XDG_CACHE_HOME XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME
+
 work=$(t_exec_tmpdir sandhome-e2e)
 trap 'rm -rf "$work"' EXIT
 
