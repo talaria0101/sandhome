@@ -215,6 +215,18 @@ sh_toolchain_rust_target_wrapper() {
     [ -x "$sh_rw2_real" ] || return 0
     mkdir -p "$sh_rw2_bin" 2>/dev/null || return 0
     sh_rw2_out=$sh_rw2_bin/cargo
+    # STOP: NEVER DRESS THE REAL CARGO AS THE WRAPPER ITSELF. The adopt-path
+    # candidate loop can hand us $sh_rw2_out here (on this very host the first
+    # bootstrap wrote a cargo wrapper whose exec line named itself, and every
+    # `cargo build` then re-exec'd forever and hung, 124 on the consumer
+    # round). A wrapper that execs its own path is not a wrapper; refuse to
+    # write it and leave the caller's cargo where it is.
+    case "$sh_rw2_real" in
+        "$sh_rw2_out") return 0 ;;
+    esac
+    if [ -r "$sh_rw2_real" ] && head -n 3 "$sh_rw2_real" 2>/dev/null | grep -q 'sandhome: resolve CARGO_TARGET_DIR'; then
+        return 0
+    fi
     sh_rw2_tmp="$sh_rw2_out.tmp.$$"
     sh_rw2_real_q=$(sh_sq_quote "$sh_rw2_real")
     {
@@ -1110,14 +1122,45 @@ SHIMEOF
         sh_re_adopt_wrapper_done=yes
         if [ -n "${SH_EXEC_BIN:-}" ] && [ -n "${SH_EXEC:-}" ]; then
             for sh_re_aw in \
-                "${SH_EXEC_BIN}/cargo" \
                 "${SH_EXEC}/views/rust/cargo/bin/cargo" \
                 "${SH_EXEC}/views/rust/rustup/toolchains"/*/bin/cargo
             do
                 [ -x "$sh_re_aw" ] || continue
+                # Never take the wrapper's own output path as the real cargo:
+                # the wrapper overwrites it, so it would exec itself.
+                case "$sh_re_aw" in
+                    "${SH_EXEC_BIN}/cargo") continue ;;
+                esac
+                # A leftover wrapper from a broken run is not a working copy.
+                if head -n 3 "$sh_re_aw" 2>/dev/null | grep -q 'sandhome: resolve CARGO_TARGET_DIR'; then
+                    continue
+                fi
                 sh_toolchain_rust_target_wrapper "$SH_EXEC_BIN" "$sh_re_aw"
                 break
             done
+            # Repair a stale broken wrapper: the adopt loop above used to
+            # pass $SH_EXEC_BIN/cargo as the real cargo, so the file left
+            # behind execs itself. It is identified by the sandhome marker
+            # plus an exec line naming itself; clear it so the fall-back
+            # below can rewrite it.
+            if [ -r "$SH_EXEC_BIN/cargo" ] && \
+                head -n 3 "$SH_EXEC_BIN/cargo" 2>/dev/null | grep -q 'sandhome: resolve CARGO_TARGET_DIR' && \
+                grep -q "^exec '${SH_EXEC_BIN}/cargo'" "$SH_EXEC_BIN/cargo" 2>/dev/null; then
+                rm -f "$SH_EXEC_BIN/cargo" 2>/dev/null || true
+            fi
+            # On an adopt path the real cargo lives beside the adopted
+            # rustc, not under a view, and the mirror may have re-promoted a
+            # plain copy into $SH_EXEC_BIN/cargo. Always (re)point the
+            # wrapper at the adopted cargo, not at a mirror copy of it, so
+            # the two never chase each other. The wrapper function's own
+            # self-exec guard refuses a same-path real, so overwriting the
+            # mirror copy is safe.
+            if [ -z "${sh_re_view:-}" ] || [ ! -x "${sh_re_view:-/}/cargo/bin/cargo" ]; then
+                sh_re_adopt_cargo="$(tc_rust_adopted)/cargo"
+                if [ -x "$sh_re_adopt_cargo" ] && [ "$sh_re_adopt_cargo" != "${SH_EXEC_BIN}/cargo" ]; then
+                    sh_toolchain_rust_target_wrapper "$SH_EXEC_BIN" "$sh_re_adopt_cargo"
+                fi
+            fi
         fi
         [ "$sh_re_installed" = yes ] || return 0
     fi
