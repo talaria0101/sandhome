@@ -830,6 +830,18 @@ sandhome_bootstrap_main() {
 
     # Compose the request: the toolset, plus --with, minus --without, first-seen
     # wins so a name the toolset and --with both carry is installed once.
+    # STOP: TAR_OPTIONS MUST BE DEFAULT BEFORE THE INSTALLS, NOT AFTER. The
+    # generated env.sh exports TAR_OPTIONS=--no-same-owner (issue #162), but
+    # it is only written after the toolchain loop. Every tar called inside a
+    # toolchain installer (emsdk's own node/LLVM tarballs carry foreign
+    # uids) then hit `tar: Cannot change ownership to uid 1000` and the
+    # whole install failed with nothing naming the cause. Set the same
+    # guarded default in the bootstrap shell before the loop.
+    case "${TAR_OPTIONS:-}" in
+        *no-same-owner*) ;;
+        '') TAR_OPTIONS='--no-same-owner'; export TAR_OPTIONS ;;
+        *)  TAR_OPTIONS="$TAR_OPTIONS --no-same-owner"; export TAR_OPTIONS ;;
+    esac
     sh_mb_wanted=''
     for sh_mb_name in $(sh_toolset_names "$SH_TOOLSET") $(sh_split_on ',' "$SH_WITH"); do
         if sh_in_list "$sh_mb_name" "$(sh_split_on ',' "$SH_WITHOUT")"; then
