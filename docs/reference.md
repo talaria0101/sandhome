@@ -145,6 +145,8 @@ usage: sh bootstrap.sh [options]
   --no-path-line      do not add the exec bin directory to the login files
   --no-global         do not install the global hook (a directory already on
                       PATH that loads the environment for a fresh shell)
+  --login             with --home/--exec, still install the login files
+                      (same as SANDHOME_LOGIN=1)
   --dry-run           print what would be done and change nothing
   --json              print the report as one JSON object
   --doh-url URL       DNS-over-HTTPS resolver for a confirmed no-resolver

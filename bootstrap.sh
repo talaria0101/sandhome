@@ -246,6 +246,8 @@ usage: sh bootstrap.sh [options]
   --no-path-line      do not add the exec bin directory to the login files
   --no-global         do not install the global hook (a directory already on
                       PATH that loads the environment for a fresh shell)
+  --login             with --home/--exec, still install the login files
+                      (same as SANDHOME_LOGIN=1)
   --dry-run           print what would be done and change nothing
   --json              print the report as one JSON object
   --doh-url URL       DNS-over-HTTPS resolver for a confirmed no-resolver
@@ -339,6 +341,13 @@ SH_PATH_LINE=install
 # The global hook is on by default; SANDHOME_GLOBAL=0 (or --no-global) keeps a
 # hook out of every PATH directory. A test suite and a restricted host set it
 # so nothing is written where they do not own the directory.
+# Capture EXPLICITNESS before the default below assigns a value: a
+# named-root run warns about the hook only when the install decision came
+# from the default, never when the caller set SANDHOME_GLOBAL themselves.
+case "${SANDHOME_GLOBAL+x}" in
+    x) SH_GLOBAL_EXPLICIT=1 ;;
+    *) SH_GLOBAL_EXPLICIT=0 ;;
+esac
 : "${SANDHOME_GLOBAL:=install}"
 case "$SANDHOME_GLOBAL" in
     0|no|off|none) SH_GLOBAL=none ;;
@@ -522,6 +531,7 @@ sh_bootstrap_args() {
             --no-skills)        SH_SKILLS=none; shift ;;
             --no-profile)      SH_PROFILE=none; shift ;;
             --no-path-line)    SH_PATH_LINE=none; shift ;;
+            --login)           SANDHOME_LOGIN=1; shift ;;
             --no-global)       SH_GLOBAL=none; shift ;;
             --dry-run)         SH_DRY_RUN=1; shift ;;
             --json)            SH_JSON=1; shift ;;
@@ -1002,17 +1012,25 @@ sandhome_bootstrap_main() {
     # directory on the caller's real PATH (measured: $HOME/.local/bin), with the
     # dispatcher carrying the throwaway exec root. Removing the root left a dead
     # hook in every new shell - the same harm as the dead profile line, one
-    # directory over. A named root is isolated, so the hook is skipped with the
-    # login files unless SANDHOME_LOGIN=1 asks for the whole login change.
+    # directory over. The default answer is: keep the hook (tests rely on a
+    # named --exec run installing it; SANDHOME_GLOBAL=install is an explicit
+    # ask that must be honoured), but say out loud what it now points at, and
+    # say how to keep it out (--no-global / SANDHOME_GLOBAL=none).
+    #
+    # (Isolation keys on the --home/--exec flags, not on SANDHOME_HOME/
+    # SANDHOME_EXEC being set in the environment: those variables are how a
+    # sourced env.sh names its own roots, and keying on them would silently
+    # flip the default login behaviour for every re-run inside an already
+    # provisioned shell. A run that means "put the sandbox somewhere else"
+    # uses the flags.)
     if [ -n "$SH_HOME_ARG" ] || [ -n "$SH_EXEC_ARG" ]; then
         : "${SANDHOME_LOGIN:=0}"
         case "$SANDHOME_LOGIN" in
             1|yes|on|true) : ;;
             *)
-                case "$SH_PROFILE" in
-                    none) : ;;
-                    *) sh_say 'named --home/--exec: leaving the login files alone (set SANDHOME_LOGIN=1 to install them)' ;;
-                esac
+                if [ "$SH_PROFILE" != none ] || [ "$SH_PATH_LINE" != none ]; then
+                    sh_say 'named --home/--exec: leaving the login files alone (set SANDHOME_LOGIN=1 or pass --login to install them)'
+                fi
                 SH_PROFILE=none
                 SH_PATH_LINE=none
                 ;;
@@ -1035,7 +1053,10 @@ sandhome_bootstrap_main() {
             *)
                 case "$SANDHOME_LOGIN" in
                     1|yes|on|true) : ;;
-                    *) sh_say 'named --home/--exec: the global hook is still installed and will point at the named exec root; pass --no-global (or SANDHOME_GLOBAL=none) to leave the caller PATH alone' ;;
+                    *) case "${SH_GLOBAL_EXPLICIT:-0}" in
+                           1) : ;;
+                           *) sh_say 'named --home/--exec: the global hook is still installed and will point at the named exec root; pass --no-global (or SANDHOME_GLOBAL=none) to leave the caller PATH alone' ;;
+                       esac ;;
                 esac
                 ;;
         esac
