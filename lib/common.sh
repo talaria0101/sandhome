@@ -742,7 +742,7 @@ sh_append_once() {
         fi
         sh_ao_seen=0
         sh_ao_body=''
-        while IFS= read -r sh_ao_existing; do
+        while IFS= read -r sh_ao_existing || [ -n "$sh_ao_existing" ]; do
             if sh_ao_match "$sh_ao_existing"; then
                 if [ "$sh_ao_seen" = 0 ]; then
                     sh_ao_body=$sh_ao_existing
@@ -771,7 +771,7 @@ sh_append_once() {
         # above, and a second `: >` on a path that now exists is exactly the
         # write-through the noclobber open was there to refuse.
         sh_ao_wrote=0
-        while IFS= read -r sh_ao_existing; do
+        while IFS= read -r sh_ao_existing || [ -n "$sh_ao_existing" ]; do
             if sh_ao_match "$sh_ao_existing"; then
                 if [ "$sh_ao_wrote" = 0 ]; then
                     printf '%s\n' "$sh_ao_line" >> "$sh_ao_tmp"
@@ -788,7 +788,7 @@ sh_append_once() {
         SH_ADDED=1
         return 0
     fi
-    while IFS= read -r sh_ao_existing; do
+    while IFS= read -r sh_ao_existing || [ -n "$sh_ao_existing" ]; do
         if [ "$sh_ao_existing" = "$sh_ao_line" ]; then
             return 0
         fi

@@ -1438,6 +1438,19 @@ t_contains "$(cat "$sa_b")" '/two/bin' 'the three-argument form replaces the lin
 t_ok "$(grep -q '/one/bin' "$sa_b" && echo 1 || echo 0)" 'the superseded line is gone'
 rm -f "$sa_a" "$sa_b" 2>/dev/null
 
+# A final line WITHOUT a trailing newline must survive. All three sh_append_once
+# loops used to read without the `|| [ -n "$line" ]` guard the sibling loops
+# already had, so an unterminated last line was dropped by the prefix rewrite
+# and invisible to the two-argument dedupe (duplicating it).
+sa_c=$tmp/append4.$$; rm -f "$sa_c"
+printf '# Added by sandhome.\nexport PATH="/old:$PATH" # sandhome\npartial' > "$sa_c"
+sh_append_once "$sa_c" 'export PATH="' 'export PATH="/x/bin:$PATH" # sandhome' '# sandhome'
+t_contains "$(cat "$sa_c")" 'partial' 'a prefix rewrite keeps an unterminated final line'
+printf '. /home/u/profile.sh' > "$sa_c"
+sh_append_once "$sa_c" '. /home/u/profile.sh'
+t_is "$(grep -c 'profile.sh' "$sa_c")" 1 'the two-argument dedupe sees an unterminated final line'
+rm -f "$sa_c" 2>/dev/null
+
 # A cmake tree is recognised by any share/cmake-* directory, not by a literal
 # version: the first version tested for share/cmake-4.4, so the next Kitware
 # minor made every adopt fail and the setup downloaded 60MB beside a working

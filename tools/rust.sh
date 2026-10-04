@@ -482,7 +482,7 @@ sandhome_cargo_target() {
     export CARGO_TARGET_DIR
     SANDHOME_CARGO_TARGET_DEFAULT=$CARGO_TARGET_DIR
     export SANDHOME_CARGO_TARGET_DEFAULT
-    unset _sh_ctr_d _sh_ctr_b _sh_ctr_s _sh_ctr_o _sh_ctr_r _sh_ctr_c _sh_ctr_w _sh_ctr_t
+    unset _sh_ctr_d _sh_ctr_b _sh_ctr_s _sh_ctr_o _sh_ctr_r _sh_ctr_c _sh_ctr_w _sh_ctr_t _sh_ctr_k _sh_ctr_l
     return 0
 }
 RESOLVEREOF
@@ -1138,16 +1138,24 @@ SHIMEOF
                 sh_toolchain_rust_target_wrapper "$SH_EXEC_BIN" "$sh_re_aw"
                 break
             done
-            # Repair a stale broken wrapper: the adopt loop above used to
-            # pass $SH_EXEC_BIN/cargo as the real cargo, so the file left
-            # behind execs itself. It is identified by the sandhome marker
-            # plus an exec line naming itself; clear it so the fall-back
-            # below can rewrite it.
-            if [ -r "$SH_EXEC_BIN/cargo" ] && \
-                head -n 3 "$SH_EXEC_BIN/cargo" 2>/dev/null | grep -q 'sandhome: resolve CARGO_TARGET_DIR' && \
-                grep -q "^exec '${SH_EXEC_BIN}/cargo'" "$SH_EXEC_BIN/cargo" 2>/dev/null; then
-                rm -f "$SH_EXEC_BIN/cargo" 2>/dev/null || true
-            fi
+            # Repair a stale broken wrapper wherever the loop above can
+            # encounter one: the old loop used to pass $SH_EXEC_BIN/cargo as
+            # the real cargo, so the file left behind execs itself. Same for a
+            # stale copy left in the view. Identified by the sandhome marker
+            # plus an exec line naming itself; cleared so the fall-back below
+            # can rewrite it.
+            for sh_re_aw in "$SH_EXEC_BIN/cargo" "${SH_EXEC}/views/rust/cargo/bin/cargo"; do
+                if [ -r "$sh_re_aw" ] && \
+                    head -n 3 "$sh_re_aw" 2>/dev/null | grep -q 'sandhome: resolve CARGO_TARGET_DIR' && \
+                    { [ "$sh_re_aw" != "$SH_EXEC_BIN/cargo" ] || \
+                      grep -qF "^exec '$sh_re_aw'" "$sh_re_aw" 2>/dev/null; }; then
+                    # On the exec bin, only a self-exec wrapper is stale (that
+                    # is what the repair exists for); in the view, any marker
+                    # wrapper is stale, since the wrapper only lives on the
+                    # exec bin.
+                    rm -f "$sh_re_aw" 2>/dev/null || true
+                fi
+            done
             # On an adopt path the real cargo lives beside the adopted
             # rustc, not under a view, and the mirror may have re-promoted a
             # plain copy into $SH_EXEC_BIN/cargo. Always (re)point the
