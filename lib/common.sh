@@ -707,8 +707,14 @@ sh_append_once() {
             *) return 1 ;;
         esac
         if [ -n "$sh_ao_mark" ]; then
+            # THE MARK IS ANCHORED TO THE END OF THE LINE. A bare substring
+            # match also takes a hand-written line that merely mentions
+            # sandhome in a later comment ("# sandhome-old note") for ours
+            # and replaces it; the bootstrap writes its marker as the LAST
+            # thing on the line, so requiring it at the end keeps our lines
+            # matched and leaves everyone else's alone.
             case "$1" in
-                *"$sh_ao_mark"*) return 0 ;;
+                *"$sh_ao_mark") return 0 ;;
                 *) return 1 ;;
             esac
         fi
@@ -782,7 +788,7 @@ sh_append_once() {
         SH_ADDED=1
         return 0
     fi
-    while read -r sh_ao_existing; do
+    while IFS= read -r sh_ao_existing; do
         if [ "$sh_ao_existing" = "$sh_ao_line" ]; then
             return 0
         fi
